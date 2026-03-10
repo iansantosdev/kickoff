@@ -1,0 +1,18 @@
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - gosec
+
+linters-settings:
+  gosec:
+    excludes:
+      - G107 # Allow variable URLs in HTTP requests (API client)
+
+issues:
+  exclude-dirs:
+    - bin
