@@ -269,14 +269,14 @@ func (c *Client) enrichVenues(ctx context.Context, events []sofascoreEvent, limi
 		}
 
 		wg.Add(1)
-		
+
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
 			wg.Done()
 			goto Wait
 		}
-		
+
 		go func(idx int) {
 			defer wg.Done()
 			defer func() { <-sem }()

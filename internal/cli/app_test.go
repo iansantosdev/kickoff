@@ -33,13 +33,13 @@ func (m *mockMatchProvider) GetMatches(ctx context.Context, teamID string, nextL
 
 func TestApp_Run(t *testing.T) {
 	tests := []struct {
-		name       string
-		teamQuery  string
-		stdinInput string
+		name          string
+		teamQuery     string
+		stdinInput    string
 		setupProvider func() MatchProvider
-		opts       AppOptions
-		wantOutput string
-		wantErr    bool
+		opts          AppOptions
+		wantOutput    string
+		wantErr       bool
 	}{
 		{
 			name:      "Error - SearchTeam fails",
@@ -113,7 +113,7 @@ func TestApp_Run(t *testing.T) {
 				t.Errorf("App.Run() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			
+
 			if !tt.wantErr && tt.wantOutput != "" {
 				got := stdout.String()
 				// Doing basic substring match since formatting is complex
