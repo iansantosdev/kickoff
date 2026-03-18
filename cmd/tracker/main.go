@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,7 +15,55 @@ import (
 	"github.com/iansantosdev/kickoff/internal/sofascore"
 )
 
+type runTarget int
+
+const (
+	runTargetDefault runTarget = iota
+	runTargetLeague
+	runTargetFeatured
+	runTargetFeaturedTeam
+	runTargetFeaturedLeague
+	runTargetFeaturedLeagueTeam
+)
+
+func selectRunTarget(featured, leagueName string, teamFlagSet bool) runTarget {
+	switch {
+	case featured != "" && leagueName != "" && teamFlagSet:
+		return runTargetFeaturedLeagueTeam
+	case featured != "" && leagueName != "":
+		return runTargetFeaturedLeague
+	case featured != "" && teamFlagSet:
+		return runTargetFeaturedTeam
+	case featured != "":
+		return runTargetFeatured
+	case leagueName != "":
+		return runTargetLeague
+	default:
+		return runTargetDefault
+	}
+}
+
+type appRunner interface {
+	Run(ctx context.Context, teamQuery string) error
+	RunMultiple(ctx context.Context, teamQueries []string) error
+	RunLeague(ctx context.Context, leagueName string) error
+	RunFeatured(ctx context.Context, period string) error
+	RunFeaturedForTeam(ctx context.Context, period, teamQuery string) error
+	RunLeagueForPeriod(ctx context.Context, leagueName, period string) error
+	RunLeagueForPeriodForTeam(ctx context.Context, leagueName, period, teamQuery string) error
+}
+
+var newAppRunner = func(opts cli.AppOptions) appRunner {
+	return cli.NewApp(sofascore.NewClient(nil), opts)
+}
+
+var exitFn = os.Exit
+
 func main() {
+	exitFn(run(os.Args[1:], os.Getenv, os.Stderr))
+}
+
+func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	var teamName string
 	var lang string
 	var country string
@@ -24,49 +73,87 @@ func main() {
 	var leagueName string
 	var featured string
 
-	defaultLang := os.Getenv("KICKOFF_LANG")
+	defaultLang := getenv("KICKOFF_LANG")
 	if defaultLang == "" {
-		sysLang := os.Getenv("LANG")
+		sysLang := getenv("LANG")
 		if strings.HasPrefix(strings.ToLower(sysLang), "pt") {
 			defaultLang = "pt-BR"
 		} else {
 			defaultLang = "en"
 		}
 	}
+	i18n.SetLanguage(detectLangFromArgs(args, defaultLang))
 
-	flag.StringVar(&teamName, "team", "Fluminense", "Name of the team to search for the next match")
-	flag.StringVar(&teamName, "t", "Fluminense", "Shorthand for -team")
-	flag.StringVar(&lang, "lang", defaultLang, "Language to use (en, pt-BR, pt)")
-	flag.StringVar(&lang, "g", defaultLang, "Shorthand for -lang")
-	flag.StringVar(&country, "country", os.Getenv("KICKOFF_COUNTRY"), "Country code for TV broadcasts (e.g. BR, US, GB)")
-	flag.StringVar(&country, "c", os.Getenv("KICKOFF_COUNTRY"), "Shorthand for -country")
-	flag.IntVar(&nextMatches, "next", 0, "Number of upcoming matches to display")
-	flag.IntVar(&nextMatches, "n", 0, "Shorthand for --next")
-	flag.IntVar(&lastMatches, "last", 0, "Number of past matches to display")
-	flag.IntVar(&lastMatches, "l", 0, "Shorthand for --last")
-	flag.BoolVar(&verbose, "verbose", false, "Show detailed log messages")
-	flag.BoolVar(&verbose, "v", false, "Shorthand for -verbose")
-	flag.StringVar(&leagueName, "league", "", "Filter matches by competition/league name (e.g. \"Champions League\")")
-	flag.StringVar(&leagueName, "L", "", "Shorthand for -league")
-	flag.StringVar(&featured, "featured", "", "Show featured matches for a period: today, tomorrow, week (hoje, amanhã, semana)")
-	flag.StringVar(&featured, "f", "", "Shorthand for -featured")
+	fs := flag.NewFlagSet("kickoff", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&teamName, "team", "Fluminense", i18n.Get("flag_team_desc"))
+	fs.StringVar(&teamName, "t", "Fluminense", i18n.Get("flag_team_short_desc"))
+	fs.StringVar(&teamName, "time", "Fluminense", i18n.Get("flag_team_short_desc"))
+	fs.StringVar(&lang, "lang", defaultLang, i18n.Get("flag_lang_desc"))
+	fs.StringVar(&lang, "g", defaultLang, i18n.Get("flag_lang_short_desc"))
+	fs.StringVar(&lang, "idioma", defaultLang, i18n.Get("flag_lang_short_desc"))
+	fs.StringVar(&country, "country", getenv("KICKOFF_COUNTRY"), i18n.Get("flag_country_desc"))
+	fs.StringVar(&country, "c", getenv("KICKOFF_COUNTRY"), i18n.Get("flag_country_short_desc"))
+	fs.StringVar(&country, "pais", getenv("KICKOFF_COUNTRY"), i18n.Get("flag_country_short_desc"))
+	fs.IntVar(&nextMatches, "next", 0, i18n.Get("flag_next_desc"))
+	fs.IntVar(&nextMatches, "n", 0, i18n.Get("flag_next_short_desc"))
+	fs.IntVar(&nextMatches, "proximos", 0, i18n.Get("flag_next_short_desc"))
+	fs.IntVar(&lastMatches, "last", 0, i18n.Get("flag_last_desc"))
+	fs.IntVar(&lastMatches, "l", 0, i18n.Get("flag_last_short_desc"))
+	fs.IntVar(&lastMatches, "ultimos", 0, i18n.Get("flag_last_short_desc"))
+	fs.BoolVar(&verbose, "verbose", false, i18n.Get("flag_verbose_desc"))
+	fs.BoolVar(&verbose, "v", false, i18n.Get("flag_verbose_short_desc"))
+	fs.BoolVar(&verbose, "detalhado", false, i18n.Get("flag_verbose_short_desc"))
+	fs.StringVar(&leagueName, "league", "", i18n.Get("flag_league_desc"))
+	fs.StringVar(&leagueName, "L", "", i18n.Get("flag_league_short_desc"))
+	fs.StringVar(&leagueName, "liga", "", i18n.Get("flag_league_short_desc"))
+	fs.StringVar(&featured, "featured", "", i18n.Get("flag_featured_desc"))
+	fs.StringVar(&featured, "f", "", i18n.Get("flag_featured_short_desc"))
+	fs.StringVar(&featured, "destaques", "", i18n.Get("flag_featured_short_desc"))
 
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\nOptions:\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  -c, --country string   Country code for TV broadcasts (e.g. BR, US, GB)\n")
-		fmt.Fprintf(os.Stderr, "  -f, --featured string  Show featured matches: today, tomorrow, week\n")
-		fmt.Fprintf(os.Stderr, "  -g, --lang string      Language to use: en, pt-BR, pt (default %q)\n", defaultLang)
-		fmt.Fprintf(os.Stderr, "  -l, --last int         Number of past matches to display (default 0)\n")
-		fmt.Fprintf(os.Stderr, "  -L, --league string    Filter matches by league/competition name\n")
-		fmt.Fprintf(os.Stderr, "  -n, --next int         Number of upcoming matches to display (default 1 if -l is 0)\n")
-		fmt.Fprintf(os.Stderr, "  -t, --team string      Name of the team to search (default \"Fluminense\")\n")
-		fmt.Fprintf(os.Stderr, "                         Supports comma-separated list: \"Flamengo, Real Madrid\"\n")
-		fmt.Fprintf(os.Stderr, "  -v, --verbose          Show detailed log messages\n")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "%s: %s [options]\n\n%s:\n", i18n.Get("usage"), "kickoff", i18n.Get("options"))
+		if i18n.CurrentLanguage() == "pt-BR" {
+			fmt.Fprintf(stderr, "  -c, --pais string      %s\n", i18n.Get("flag_country_desc"))
+			fmt.Fprintf(stderr, "  -f, --destaques string %s\n", i18n.Get("flag_featured_desc_help"))
+			fmt.Fprintf(stderr, "  -g, --idioma string    %s (%s %q)\n", i18n.Get("flag_lang_desc"), i18n.Get("default"), defaultLang)
+			fmt.Fprintf(stderr, "  -l, --ultimos int      %s\n", i18n.Get("flag_last_desc_help"))
+			fmt.Fprintf(stderr, "  -L, --liga string      %s\n", i18n.Get("flag_league_desc"))
+			fmt.Fprintf(stderr, "  -n, --proximos int     %s\n", i18n.Get("flag_next_desc_help"))
+			fmt.Fprintf(stderr, "  -t, --time string      %s (%s \"Fluminense\")\n", i18n.Get("flag_team_desc"), i18n.Get("default"))
+			fmt.Fprintf(stderr, "                         %s\n", i18n.Get("flag_team_list_desc"))
+			fmt.Fprintf(stderr, "  -v, --detalhado        %s\n", i18n.Get("flag_verbose_desc"))
+			return
+		}
+		fmt.Fprintf(stderr, "  -c, --country string   %s\n", i18n.Get("flag_country_desc"))
+		fmt.Fprintf(stderr, "  -f, --featured string  %s\n", i18n.Get("flag_featured_desc_help"))
+		fmt.Fprintf(stderr, "  -g, --lang string      %s (%s %q)\n", i18n.Get("flag_lang_desc"), i18n.Get("default"), defaultLang)
+		fmt.Fprintf(stderr, "  -l, --last int         %s\n", i18n.Get("flag_last_desc_help"))
+		fmt.Fprintf(stderr, "  -L, --league string    %s\n", i18n.Get("flag_league_desc"))
+		fmt.Fprintf(stderr, "  -n, --next int         %s\n", i18n.Get("flag_next_desc_help"))
+		fmt.Fprintf(stderr, "  -t, --team string      %s (%s \"Fluminense\")\n", i18n.Get("flag_team_desc"), i18n.Get("default"))
+		fmt.Fprintf(stderr, "                         %s\n", i18n.Get("flag_team_list_desc"))
+		fmt.Fprintf(stderr, "  -v, --verbose          %s\n", i18n.Get("flag_verbose_desc"))
 	}
-	flag.Parse()
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
 
-	// Default behavior: if no matches are requested, show next 1
-	if nextMatches == 0 && lastMatches == 0 {
+	teamFlagSet := false
+	limitFlagSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "team" || f.Name == "t" || f.Name == "time" {
+			teamFlagSet = true
+		}
+		if f.Name == "next" || f.Name == "n" || f.Name == "proximos" || f.Name == "last" || f.Name == "l" || f.Name == "ultimos" {
+			limitFlagSet = true
+		}
+	})
+	target := selectRunTarget(featured, leagueName, teamFlagSet)
+
+	// Default behavior in team mode: if no matches are requested, show next 1.
+	// For featured/league flows, keep 0 so commands return the full filtered set.
+	if target == runTargetDefault && nextMatches == 0 && lastMatches == 0 {
 		nextMatches = 1
 	}
 
@@ -81,6 +168,11 @@ func main() {
 
 	i18n.SetLanguage(lang)
 
+	if featured != "" && limitFlagSet {
+		fmt.Fprintln(stderr, i18n.Get("err_featured_with_limits"))
+		return 1
+	}
+
 	// Resolve country code if not explicitly set
 	if country == "" {
 		country = i18n.CountryFromLang(lang)
@@ -88,7 +180,7 @@ func main() {
 	country = i18n.NormalizeCountry(country)
 	if country == "" {
 		// Fallback: extract from system LANG, e.g. "pt_BR.UTF-8" → "BR"
-		sysLang := os.Getenv("LANG")
+		sysLang := getenv("LANG")
 		if idx := strings.Index(sysLang, "_"); idx >= 0 {
 			code := sysLang[idx+1:]
 			if dotIdx := strings.Index(code, "."); dotIdx >= 0 {
@@ -99,9 +191,8 @@ func main() {
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
 
-	app := cli.NewApp(sofascore.NewClient(nil), cli.AppOptions{
+	app := newAppRunner(cli.AppOptions{
 		CountryCode: country,
 		NextMatches: nextMatches,
 		LastMatches: lastMatches,
@@ -109,12 +200,18 @@ func main() {
 
 	var err error
 
-	switch {
-	case featured != "":
+	switch target {
+	case runTargetFeaturedLeagueTeam:
+		err = app.RunLeagueForPeriodForTeam(ctx, leagueName, featured, teamName)
+	case runTargetFeaturedLeague:
+		err = app.RunLeagueForPeriod(ctx, leagueName, featured)
+	case runTargetFeaturedTeam:
+		err = app.RunFeaturedForTeam(ctx, featured, teamName)
+	case runTargetFeatured:
 		err = app.RunFeatured(ctx, featured)
-	case leagueName != "":
+	case runTargetLeague:
 		err = app.RunLeague(ctx, leagueName)
-	default:
+	case runTargetDefault:
 		// Support comma-separated team names: -team "Flamengo, Real Madrid, Arsenal"
 		teams := parseTeamList(teamName)
 		if len(teams) > 1 {
@@ -125,9 +222,30 @@ func main() {
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
-		os.Exit(1)
+		cancel()
+		fmt.Fprintf(stderr, "Erro: %v\n", err)
+		return 1
 	}
+	cancel()
+	return 0
+}
+
+func detectLangFromArgs(args []string, fallback string) string {
+	for i, arg := range args {
+		switch {
+		case arg == "-g" || arg == "--lang" || arg == "--idioma":
+			if i+1 < len(args) {
+				return args[i+1]
+			}
+		case strings.HasPrefix(arg, "-g="):
+			return strings.TrimPrefix(arg, "-g=")
+		case strings.HasPrefix(arg, "--lang="):
+			return strings.TrimPrefix(arg, "--lang=")
+		case strings.HasPrefix(arg, "--idioma="):
+			return strings.TrimPrefix(arg, "--idioma=")
+		}
+	}
+	return fallback
 }
 
 // parseTeamList splits a comma-separated team name string into a trimmed slice.
