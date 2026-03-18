@@ -7,11 +7,27 @@ linters:
     - gosimple
     - ineffassign
     - gosec
+    - errorlint
+    - bodyclose
+    - revive
+    - gocritic
+    - prealloc
+    - nilerr
+    - unconvert
+    - misspell
 
 linters-settings:
   gosec:
     excludes:
       - G107 # Allow variable URLs in HTTP requests (API client)
+  revive:
+    rules:
+      - name: exported
+        disabled: true
+      - name: package-comments
+        disabled: true
+  misspell:
+    locale: US
 
 issues:
   exclude-dirs:
