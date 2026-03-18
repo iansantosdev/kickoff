@@ -270,3 +270,62 @@ func TestFormatClock_Relative(t *testing.T) {
 		t.Errorf("expected period label, got: %q", result)
 	}
 }
+
+func TestRelativeDay(t *testing.T) {
+	now := time.Date(2026, 3, 16, 21, 0, 0, 0, time.Local)
+
+	tests := []struct {
+		name      string
+		matchDate time.Time
+		want      string
+	}{
+		{
+			name:      "Today returns date_today",
+			matchDate: time.Date(2026, 3, 16, 18, 0, 0, 0, time.Local),
+			want:      "Today",
+		},
+		{
+			name:      "Yesterday returns date_yesterday",
+			matchDate: time.Date(2026, 3, 15, 21, 0, 0, 0, time.Local),
+			want:      "Yesterday",
+		},
+		{
+			name:      "Tomorrow returns date_tomorrow",
+			matchDate: time.Date(2026, 3, 17, 14, 0, 0, 0, time.Local),
+			want:      "Tomorrow",
+		},
+		{
+			name:      "3 days ago returns weekday",
+			matchDate: time.Date(2026, 3, 13, 14, 0, 0, 0, time.Local),
+			want:      "Friday",
+		},
+		{
+			name:      "5 days from now returns weekday",
+			matchDate: time.Date(2026, 3, 21, 14, 0, 0, 0, time.Local),
+			want:      "Saturday",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := relativeDay(tt.matchDate, now)
+			if got != tt.want {
+				t.Errorf("relativeDay() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatDateStr_RelativeToday(t *testing.T) {
+	today := time.Now()
+	match := time.Date(today.Year(), today.Month(), today.Day(), 21, 30, 0, 0, time.Local)
+
+	result := formatDateStr(match)
+
+	if !strings.Contains(result, "Today") {
+		t.Errorf("expected 'Today' in date string, got: %q", result)
+	}
+	if !strings.Contains(result, "21:30") {
+		t.Errorf("expected time 21:30, got: %q", result)
+	}
+}

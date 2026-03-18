@@ -147,14 +147,38 @@ func weekdayI18n(d time.Weekday) string {
 	}
 }
 
-// formatDateStr formats a time as "Weekday, DD/MM/YYYY at HH:MM" in local timezone.
+// formatDateStr formats a time as "DayLabel, DD/MM/YYYY at HH:MM" in local timezone.
+// DayLabel is "Today"/"Yesterday"/"Tomorrow" when applicable, or the weekday name.
 func formatDateStr(t time.Time) string {
 	if t.IsZero() {
 		return i18n.Get("unknown_date")
 	}
 	t = t.In(time.Local)
-	dayStr := weekdayI18n(t.Weekday())
+	dayStr := relativeDay(t, time.Now())
 	return fmt.Sprintf("%s, %s %s %s", dayStr, t.Format("02/01/2006"), i18n.Get("at"), t.Format("15:04"))
+}
+
+// relativeDay returns a localized label: "Today", "Yesterday", "Tomorrow",
+// or the weekday name for any other date. Comparison is date-only (ignoring time).
+func relativeDay(matchDate, now time.Time) string {
+	matchDate = matchDate.In(time.Local)
+	now = now.In(time.Local)
+
+	matchDay := time.Date(matchDate.Year(), matchDate.Month(), matchDate.Day(), 0, 0, 0, 0, time.Local)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+
+	diff := matchDay.Sub(today)
+
+	switch {
+	case diff == 0:
+		return i18n.Get("date_today")
+	case diff == -24*time.Hour:
+		return i18n.Get("date_yesterday")
+	case diff == 24*time.Hour:
+		return i18n.Get("date_tomorrow")
+	default:
+		return weekdayI18n(matchDate.Weekday())
+	}
 }
 
 // formatClock converts a raw match clock (e.g. "85'") and period number
