@@ -2,6 +2,7 @@ package sofascore
 
 import (
 	"testing"
+	"time"
 
 	"github.com/iansantosdev/kickoff/internal/domain"
 )
@@ -333,5 +334,137 @@ func TestMapEventToMatch_NilVenue(t *testing.T) {
 	match := mapEventToMatch(event)
 	if match.Venue != "" {
 		t.Errorf("Venue = %q, want empty", match.Venue)
+	}
+}
+
+func TestCalculateLiveClock_StoppageTime(t *testing.T) {
+	tests := []struct {
+		name       string
+		initial    int // in seconds, offset from period start minute (e.g., 2nd half starts at 45*60=2700)
+		nowOffset  int // seconds elapsed since period start
+		lastPeriod string
+		statusType string
+		addedTime  *int
+		injuryTime *int
+		wantClock  string
+	}{
+		{
+			name:       "1st half normal time 30min",
+			initial:    0,
+			nowOffset:  30 * 60,
+			lastPeriod: "period1",
+			statusType: "inprogress",
+			wantClock:  "30'",
+		},
+		{
+			name:       "1st half stoppage time 45+2",
+			initial:    0,
+			nowOffset:  47 * 60,
+			lastPeriod: "period1",
+			statusType: "inprogress",
+			wantClock:  "45+2'",
+		},
+		{
+			name:       "2nd half normal time 70min",
+			initial:    45 * 60,
+			nowOffset:  25 * 60,
+			lastPeriod: "period2",
+			statusType: "inprogress",
+			wantClock:  "70'",
+		},
+		{
+			name:       "2nd half stoppage time 90+3",
+			initial:    45 * 60,
+			nowOffset:  48 * 60,
+			lastPeriod: "period2",
+			statusType: "inprogress",
+			wantClock:  "90+3'",
+		},
+		{
+			name:       "2nd half stoppage uses API addedTime when present",
+			initial:    45 * 60,
+			nowOffset:  48 * 60, // computed would be 90+3
+			lastPeriod: "period2",
+			statusType: "inprogress",
+			addedTime: func() *int {
+				v := 4
+				return &v
+			}(),
+			wantClock: "90+4'",
+		},
+		{
+			name:       "2nd half stoppage uses API injuryTime when present",
+			initial:    45 * 60,
+			nowOffset:  48 * 60, // computed would be 90+3
+			lastPeriod: "period2",
+			statusType: "inprogress",
+			injuryTime: func() *int {
+				v := 5
+				return &v
+			}(),
+			wantClock: "90+5'",
+		},
+		{
+			name:       "Extra time 1st half stoppage 105+1",
+			initial:    90 * 60,
+			nowOffset:  16 * 60,
+			lastPeriod: "extra1",
+			statusType: "inprogress",
+			wantClock:  "105+1'",
+		},
+		{
+			name:       "Extra time 2nd half stoppage 120+2",
+			initial:    105 * 60,
+			nowOffset:  17 * 60,
+			lastPeriod: "extra2",
+			statusType: "inprogress",
+			wantClock:  "120+2'",
+		},
+		{
+			name:       "Not in progress returns empty",
+			initial:    0,
+			nowOffset:  30 * 60,
+			lastPeriod: "period1",
+			statusType: "notstarted",
+			wantClock:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Use a fixed reference time and compute periodStart relative to it
+			refNow := time.Now()
+			periodStart := refNow.Unix() - int64(tt.nowOffset)
+
+			event := sofascoreEvent{
+				LastPeriod: tt.lastPeriod,
+				Time: &struct {
+					CurrentPeriodStart int64 `json:"currentPeriodStartTimestamp"`
+					Initial            int   `json:"initial"`
+					AddedTime          *int  `json:"addedTime"`
+					InjuryTime         *int  `json:"injuryTime"`
+				}{
+					CurrentPeriodStart: periodStart,
+					Initial:            tt.initial,
+					AddedTime:          tt.addedTime,
+					InjuryTime:         tt.injuryTime,
+				},
+				Status: struct {
+					Code        int    `json:"code"`
+					Description string `json:"description"`
+					Type        string `json:"type"`
+				}{Type: tt.statusType},
+			}
+
+			state := domain.StatePre
+			if tt.statusType == "inprogress" {
+				state = domain.StateIn
+			}
+
+			got := calculateLiveClock(event, state)
+			if got != tt.wantClock {
+				t.Errorf("calculateLiveClock() = %q, want %q", got, tt.wantClock)
+			}
+		})
 	}
 }

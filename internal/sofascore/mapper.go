@@ -1,6 +1,7 @@
 package sofascore
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -96,10 +97,36 @@ func calculateLiveClock(e sofascoreEvent, state domain.MatchState) string {
 		elapsed := int(now-e.Time.CurrentPeriodStart) + e.Time.Initial
 		minutes := elapsed / 60
 		if minutes > 0 {
+			boundary := periodBoundary(e.LastPeriod)
+			if boundary > 0 && minutes > boundary {
+				extra := minutes - boundary
+				if e.Time.AddedTime != nil && *e.Time.AddedTime > 0 {
+					extra = *e.Time.AddedTime
+				} else if e.Time.InjuryTime != nil && *e.Time.InjuryTime > 0 {
+					extra = *e.Time.InjuryTime
+				}
+				return fmt.Sprintf("%d+%d'", boundary, extra)
+			}
 			return strconv.Itoa(minutes) + "'"
 		}
 	}
 	return ""
+}
+
+// periodBoundary returns the regular-time limit for the given period.
+// Minutes beyond this boundary are displayed as stoppage time (e.g. 90+3').
+func periodBoundary(lastPeriod string) int {
+	switch lastPeriod {
+	case "period1":
+		return 45
+	case "period2":
+		return 90
+	case "extra1", "period3":
+		return 105
+	case "extra2", "period4":
+		return 120
+	}
+	return 0
 }
 
 func mapRoundInfo(m *domain.Match, e sofascoreEvent) {

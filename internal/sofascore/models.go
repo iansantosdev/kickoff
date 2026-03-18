@@ -81,6 +81,8 @@ type sofascoreEvent struct {
 	Time           *struct {
 		CurrentPeriodStart int64 `json:"currentPeriodStartTimestamp"`
 		Initial            int   `json:"initial"`
+		AddedTime          *int  `json:"addedTime"`
+		InjuryTime         *int  `json:"injuryTime"`
 	} `json:"time"`
 }
 
