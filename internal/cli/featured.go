@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/iansantosdev/kickoff/internal/domain"
 	"github.com/iansantosdev/kickoff/internal/i18n"
@@ -20,41 +21,90 @@ type ScheduledEventsProvider interface {
 	GetScheduledEvents(ctx context.Context, date string) (iter.Seq[domain.Match], error)
 }
 
-// featuredLeagues contains the set of top-tier leagues considered "featured".
-// League names are stored in lowercase for case-insensitive matching.
-var featuredLeagues = map[string]bool{
-	"champions league":    true,
-	"premier league":      true,
-	"laliga":              true,
-	"la liga":             true,
-	"serie a":             true,
-	"bundesliga":          true,
-	"ligue 1":             true,
-	"brasileirão série a": true,
-	"copa libertadores":   true,
-	"europa league":       true,
-	"copa do brasil":      true,
-	"fa cup":              true,
-	"conference league":   true,
-	"copa sudamericana":   true,
-	"copa america":        true,
-	"euro championship":   true,
-	"world cup":           true,
+// featuredLeagues contains top-tier men's competitions observed in Sofascore
+// scheduled-events responses (uniqueTournament.name), normalized to ASCII.
+var featuredLeagues = map[string]struct{}{
+	"a league men":               {},
+	"afc champions league two":   {},
+	"bundesliga":                 {},
+	"brasileirao betano":         {},
+	"caf champions league":       {},
+	"caf confederations cup":     {},
+	"concacaf champions cup":     {},
+	"conmebol libertadores":      {},
+	"conmebol sudamericana":      {},
+	"copa betano do brasil":      {},
+	"efl cup":                    {},
+	"fa cup":                     {},
+	"fifa world cup":             {},
+	"j1 league":                  {},
+	"k league 1":                 {},
+	"laliga":                     {},
+	"liga portugal betclic":      {},
+	"liga profesional de futbol": {},
+	"liga mx clausura":           {},
+	"ligue 1":                    {},
+	"mls":                        {},
+	"premier league":             {},
+	"saudi pro league":           {},
+	"serie a":                    {},
+	"trendyol super lig":         {},
+	"uefa champions league":      {},
+	"uefa conference league":     {},
+	"uefa europa league":         {},
+	"uefa nations league":        {},
+	"vriendenloterij eredivisie": {},
+	"world cup qual uefa":        {},
 }
 
 // IsFeatured reports whether a league is considered a top-tier "featured" league.
 func IsFeatured(leagueName string) bool {
-	lower := strings.ToLower(leagueName)
-	if featuredLeagues[lower] {
+	norm := normalizeFeaturedName(leagueName)
+	if norm == "" {
+		return false
+	}
+	if _, ok := featuredLeagues[norm]; ok {
 		return true
 	}
-	// Partial match: allow "UEFA Champions League" to match "champions league"
+	// Partial match: allow phase/sponsor suffixes in API labels.
 	for key := range featuredLeagues {
-		if strings.Contains(lower, key) {
+		if strings.Contains(norm, key) {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeFeaturedName(input string) string {
+	s := strings.ToLower(strings.TrimSpace(input))
+
+	replacer := strings.NewReplacer(
+		"á", "a", "à", "a", "â", "a", "ã", "a", "ä", "a",
+		"é", "e", "è", "e", "ê", "e", "ë", "e",
+		"í", "i", "ì", "i", "î", "i", "ï", "i",
+		"ó", "o", "ò", "o", "ô", "o", "õ", "o", "ö", "o",
+		"ú", "u", "ù", "u", "û", "u", "ü", "u",
+		"ç", "c", "ñ", "n",
+	)
+	s = replacer.Replace(s)
+
+	var b strings.Builder
+	b.Grow(len(s))
+	lastSpace := true
+
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			lastSpace = false
+			continue
+		}
+		if !lastSpace {
+			b.WriteByte(' ')
+			lastSpace = true
+		}
+	}
+
+	return strings.TrimSpace(b.String())
 }
 
 // ResolvePeriod converts a relative period name (today/tomorrow/week)
@@ -116,6 +166,55 @@ func isMatchOnDateLocal(m domain.Match, dateYYYYMMDD string) bool {
 		return false
 	}
 	return m.Date.In(time.Local).Format("2006-01-02") == dateYYYYMMDD
+}
+
+func parseTeamQueries(raw string) []string {
+	parts := strings.Split(raw, ",")
+	queries := make([]string, 0, len(parts))
+	for _, part := range parts {
+		q := strings.TrimSpace(part)
+		if q != "" {
+			queries = append(queries, q)
+		}
+	}
+	if len(queries) == 0 {
+		return []string{raw}
+	}
+	return queries
+}
+
+func matchHasTeamQuery(m domain.Match, query string) bool {
+	lq := strings.ToLower(strings.TrimSpace(query))
+	if lq == "" {
+		return false
+	}
+
+	candidates := []string{
+		m.HomeTeam.Name,
+		m.AwayTeam.Name,
+		m.Name,
+	}
+	for _, candidate := range candidates {
+		if strings.Contains(strings.ToLower(candidate), lq) {
+			return true
+		}
+	}
+	return false
+}
+
+func filterMatchesByTeam(matches []domain.Match, teamQuery string) []domain.Match {
+	queries := parseTeamQueries(teamQuery)
+	filtered := make([]domain.Match, 0, len(matches))
+
+	for _, m := range matches {
+		for _, q := range queries {
+			if matchHasTeamQuery(m, q) {
+				filtered = append(filtered, m)
+				break
+			}
+		}
+	}
+	return filtered
 }
 
 func collectScheduledByDates(ctx context.Context, sp ScheduledEventsProvider, dates []string) ([]domain.Match, error) {
@@ -236,6 +335,23 @@ func selectLeagueFromMatches(stdin *bufio.Reader, stdout io.Writer, matches []do
 	return promptLeagueChoice(stdin, stdout, candidates, query)
 }
 
+func filterBySelectedLeague(matches []domain.Match, selectedLeague leagueCandidate) []domain.Match {
+	filtered := make([]domain.Match, 0, len(matches))
+	for _, m := range matches {
+		if selectedLeague.ID != 0 {
+			if m.LeagueID == selectedLeague.ID {
+				filtered = append(filtered, m)
+			}
+			continue
+		}
+		if normalizeLeagueName(m.League) == normalizeLeagueName(selectedLeague.Name) &&
+			normalizeLeagueName(m.LeagueCountry) == normalizeLeagueName(selectedLeague.Country) {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
+}
+
 func promptLeagueChoice(stdin *bufio.Reader, stdout io.Writer, candidates []leagueCandidate, query string) (leagueCandidate, bool, error) {
 	// If there are duplicate names, disambiguate labels.
 	nameCount := make(map[string]int, len(candidates))
@@ -274,12 +390,18 @@ func promptLeagueChoice(stdin *bufio.Reader, stdout io.Writer, candidates []leag
 // RunLeague fetches scheduled events for the next days (default: week)
 // and filters them by league/competition name (substring match).
 func (a *App) RunLeague(ctx context.Context, leagueName string) error {
+	return a.RunLeagueForPeriod(ctx, leagueName, "week")
+}
+
+// RunLeagueForPeriod fetches scheduled events for the given period
+// and filters them by league/competition name.
+func (a *App) RunLeagueForPeriod(ctx context.Context, leagueName, period string) error {
 	sp, ok := a.provider.(ScheduledEventsProvider)
 	if !ok {
 		return fmt.Errorf("provider does not support scheduled events")
 	}
 
-	dates, err := ResolvePeriod("week")
+	dates, err := ResolvePeriod(period)
 	if err != nil {
 		return err
 	}
@@ -299,24 +421,10 @@ func (a *App) RunLeague(ctx context.Context, leagueName string) error {
 		return nil
 	}
 
-	var filtered []domain.Match
-	for _, m := range all {
-		if selectedLeague.ID != 0 {
-			if m.LeagueID == selectedLeague.ID {
-				filtered = append(filtered, m)
-			}
-			continue
-		}
-		if normalizeLeagueName(m.League) == normalizeLeagueName(selectedLeague.Name) &&
-			normalizeLeagueName(m.LeagueCountry) == normalizeLeagueName(selectedLeague.Country) {
-			filtered = append(filtered, m)
-		}
-	}
+	filtered := filterBySelectedLeague(all, selectedLeague)
+	filtered = a.applyMatchLimit(filtered)
 
-	if len(filtered) == 0 {
-		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", i18n.Get("no_league_matches"), selectedLeague.Name)
-		return nil
-	}
+	a.enrichBroadcasts(ctx, filtered)
 
 	fmt.Fprintln(a.opts.Stdout)
 	for i, m := range filtered {
@@ -326,6 +434,56 @@ func (a *App) RunLeague(ctx context.Context, leagueName string) error {
 		fmt.Fprint(a.opts.Stdout, FormatMatch(m))
 	}
 
+	return nil
+}
+
+// RunLeagueForPeriodForTeam fetches scheduled events for the given period,
+// filters by league, and then narrows results by team query.
+func (a *App) RunLeagueForPeriodForTeam(ctx context.Context, leagueName, period, teamQuery string) error {
+	sp, ok := a.provider.(ScheduledEventsProvider)
+	if !ok {
+		return fmt.Errorf("provider does not support scheduled events")
+	}
+
+	dates, err := ResolvePeriod(period)
+	if err != nil {
+		return err
+	}
+
+	all, err := collectScheduledByDates(ctx, sp, dates)
+	if err != nil {
+		return err
+	}
+
+	stdin := bufio.NewReader(a.opts.Stdin)
+	selectedLeague, ok, err := selectLeagueFromMatches(stdin, a.opts.Stdout, all, leagueName)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", i18n.Get("no_league_matches"), leagueName)
+		return nil
+	}
+
+	leagueFiltered := filterBySelectedLeague(all, selectedLeague)
+	teamFiltered := filterMatchesByTeam(leagueFiltered, teamQuery)
+	teamFiltered = a.applyMatchLimit(teamFiltered)
+	if len(teamFiltered) == 0 {
+		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", i18n.Get("no_match_found"), teamQuery)
+		return nil
+	}
+
+	a.enrichBroadcasts(ctx, teamFiltered)
+
+	for i, m := range teamFiltered {
+		if i == 0 {
+			fmt.Fprintln(a.opts.Stdout)
+		}
+		if i > 0 {
+			fmt.Fprintln(a.opts.Stdout)
+		}
+		fmt.Fprint(a.opts.Stdout, FormatMatch(m))
+	}
 	return nil
 }
 
@@ -353,20 +511,70 @@ func (a *App) RunFeatured(ctx context.Context, period string) error {
 			allFeatured = append(allFeatured, m)
 		}
 	}
+	allFeatured = a.applyMatchLimit(allFeatured)
 
 	if len(allFeatured) == 0 {
 		fmt.Fprintf(a.opts.Stdout, "%s.\n", i18n.Get("no_featured_matches"))
 		return nil
 	}
 
-	fmt.Fprintf(a.opts.Stdout, "\n⭐ %s\n\n", bold(i18n.Get("featured_header")))
+	a.enrichBroadcasts(ctx, allFeatured)
 
 	for i, m := range allFeatured {
+		if i == 0 {
+			fmt.Fprintln(a.opts.Stdout)
+		}
 		if i > 0 {
 			fmt.Fprintln(a.opts.Stdout)
 		}
 		fmt.Fprint(a.opts.Stdout, FormatMatch(m))
 	}
 
+	return nil
+}
+
+// RunFeaturedForTeam fetches scheduled events for the given period and
+// shows matches filtered by team query.
+func (a *App) RunFeaturedForTeam(ctx context.Context, period, teamQuery string) error {
+	sp, ok := a.provider.(ScheduledEventsProvider)
+	if !ok {
+		return fmt.Errorf("provider does not support scheduled events")
+	}
+
+	dates, err := ResolvePeriod(period)
+	if err != nil {
+		return err
+	}
+
+	all, err := collectScheduledByDates(ctx, sp, dates)
+	if err != nil {
+		return err
+	}
+
+	featured := make([]domain.Match, 0, len(all))
+	for _, m := range all {
+		if IsFeatured(m.League) {
+			featured = append(featured, m)
+		}
+	}
+
+	filtered := filterMatchesByTeam(featured, teamQuery)
+	filtered = a.applyMatchLimit(filtered)
+	if len(filtered) == 0 {
+		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", i18n.Get("no_match_found"), teamQuery)
+		return nil
+	}
+
+	a.enrichBroadcasts(ctx, filtered)
+
+	for i, m := range filtered {
+		if i == 0 {
+			fmt.Fprintln(a.opts.Stdout)
+		}
+		if i > 0 {
+			fmt.Fprintln(a.opts.Stdout)
+		}
+		fmt.Fprint(a.opts.Stdout, FormatMatch(m))
+	}
 	return nil
 }

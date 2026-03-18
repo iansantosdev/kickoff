@@ -47,18 +47,16 @@ func FormatMatch(m domain.Match) string {
 		if liveOut != "" {
 			out.WriteString(liveOut)
 		}
-	} else {
-		if m.StatusDesc != domain.StatusScheduled &&
-			m.StatusDesc != domain.StatusPostponed &&
-			m.StatusDesc != domain.StatusCanceled &&
-			m.StatusDesc != domain.StatusNotStarted {
-			statusKey := strings.ToLower(strings.ReplaceAll(string(m.StatusDesc), " ", "_"))
-			translated := i18n.Get(statusKey)
-			if translated == statusKey {
-				translated = string(m.StatusDesc) // fallback to original if not found
-			}
-			fmt.Fprintf(&out, "⏳ %s\n", color(colorYellow, translated))
+	} else if m.StatusDesc != domain.StatusScheduled &&
+		m.StatusDesc != domain.StatusPostponed &&
+		m.StatusDesc != domain.StatusCanceled &&
+		m.StatusDesc != domain.StatusNotStarted {
+		statusKey := strings.ToLower(strings.ReplaceAll(string(m.StatusDesc), " ", "_"))
+		translated := i18n.Get(statusKey)
+		if translated == statusKey {
+			translated = string(m.StatusDesc) // fallback to original if not found
 		}
+		fmt.Fprintf(&out, "⏳ %s\n", color(colorYellow, translated))
 	}
 
 	return out.String()

@@ -81,7 +81,7 @@ func doSingleRequest[T any](ctx context.Context, c *http.Client, reqURL string) 
 // doRequest performs the request with up to 3 retries.
 func doRequest[T any](ctx context.Context, c *http.Client, reqURL string) (T, error) {
 	var result T
-	var errs []error
+	errs := make([]error, 0, 4)
 
 	for attempt := range 3 {
 		var err error
@@ -91,12 +91,15 @@ func doRequest[T any](ctx context.Context, c *http.Client, reqURL string) (T, er
 		}
 
 		errs = append(errs, fmt.Errorf("attempt %d: %w", attempt+1, err))
+		if errors.Is(err, errNotFound) {
+			return result, errors.Join(errs...)
+		}
 
 		select {
 		case <-ctx.Done():
 			errs = append(errs, ctx.Err())
 			return result, errors.Join(errs...)
-		case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
 		}
 	}
 

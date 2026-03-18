@@ -46,6 +46,33 @@ type App struct {
 	opts        AppOptions
 }
 
+func (a *App) enrichBroadcasts(ctx context.Context, matches []domain.Match) {
+	if a.broadcaster == nil || a.opts.CountryCode == "" || len(matches) == 0 {
+		return
+	}
+
+	var wg sync.WaitGroup
+	ctxBroadcast, cancelBroadcast := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelBroadcast()
+
+	for i := range matches {
+		wg.Add(1)
+		go func(m *domain.Match) {
+			defer wg.Done()
+			m.Broadcasts = a.broadcaster.GetBroadcasts(ctxBroadcast, m.EventID, a.opts.CountryCode)
+		}(&matches[i])
+	}
+	wg.Wait()
+}
+
+func (a *App) applyMatchLimit(matches []domain.Match) []domain.Match {
+	limit := a.opts.NextMatches + a.opts.LastMatches
+	if limit <= 0 || limit >= len(matches) {
+		return matches
+	}
+	return matches[:limit]
+}
+
 // NewApp creates a new App with the given match provider and options.
 // If the provider also implements [BroadcastProvider], broadcast
 // data will be fetched automatically.
@@ -74,7 +101,7 @@ func (a *App) Run(ctx context.Context, teamQuery string) error {
 		return fmt.Errorf("%s '%s': %w", i18n.Get("err_search_teams"), teamQuery, err)
 	}
 
-	var matches []domain.Team
+	matches := make([]domain.Team, 0, 8)
 	var exactMatch *domain.Team
 
 	for t := range teams {
@@ -87,14 +114,15 @@ func (a *App) Run(ctx context.Context, teamQuery string) error {
 
 	var selectedTeam domain.Team
 
-	if exactMatch != nil {
+	switch {
+	case exactMatch != nil:
 		selectedTeam = *exactMatch
-	} else if len(matches) == 0 {
+	case len(matches) == 0:
 		fmt.Fprintf(a.opts.Stdout, "%s '%s'\n", i18n.Get("team_not_found"), teamQuery)
 		return nil
-	} else if len(matches) == 1 {
+	case len(matches) == 1:
 		selectedTeam = matches[0]
-	} else {
+	default:
 		fmt.Fprintf(a.opts.Stdout, "%s '%s'. %s:\n", i18n.Get("multiple_teams_found"), teamQuery, i18n.Get("choose_correct_option"))
 		for i, m := range matches {
 			fmt.Fprintf(a.opts.Stdout, "%d - %s (%s)\n", i+1, m.Name, m.Subtitle)
@@ -131,7 +159,7 @@ func (a *App) Run(ctx context.Context, teamQuery string) error {
 	limit := a.opts.NextMatches + a.opts.LastMatches
 
 	// Collect matches before fetching broadcasts to allow concurrency
-	var matchResults []domain.Match
+	matchResults := make([]domain.Match, 0, max(limit, 1))
 	for match := range matchesIter {
 		matchResults = append(matchResults, match)
 		if limit > 0 && len(matchResults) >= limit {
@@ -144,22 +172,9 @@ func (a *App) Run(ctx context.Context, teamQuery string) error {
 		return nil
 	}
 
-	if a.broadcaster != nil && a.opts.CountryCode != "" {
-		var wg sync.WaitGroup
-		ctxBroadcast, cancelBroadcast := context.WithTimeout(ctx, 10*time.Second)
-		defer cancelBroadcast()
+	a.enrichBroadcasts(ctx, matchResults)
 
-		for i := range matchResults {
-			wg.Add(1)
-			go func(m *domain.Match) {
-				defer wg.Done()
-				m.Broadcasts = a.broadcaster.GetBroadcasts(ctxBroadcast, m.EventID, a.opts.CountryCode)
-			}(&matchResults[i])
-		}
-		wg.Wait()
-	}
-
-	var cards []string
+	cards := make([]string, 0, len(matchResults))
 	for _, match := range matchResults {
 		cards = append(cards, FormatMatch(match))
 	}
