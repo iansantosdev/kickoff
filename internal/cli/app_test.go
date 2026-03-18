@@ -126,3 +126,49 @@ func TestApp_Run(t *testing.T) {
 		})
 	}
 }
+
+func TestApp_RunMultiple(t *testing.T) {
+	var stdout bytes.Buffer
+
+	provider := &mockMatchProvider{
+		SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+			return func(yield func(domain.Team) bool) {
+				yield(domain.Team{ID: "1", Name: query})
+			}, nil
+		},
+		getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+			return func(yield func(domain.Match) bool) {
+				yield(domain.Match{
+					League:     "Test League",
+					StatusDesc: domain.StatusScheduled,
+					HomeTeam:   domain.Team{ID: "1", Name: "Home"},
+					AwayTeam:   domain.Team{ID: "2", Name: "Away"},
+				})
+			}, nil
+		},
+	}
+
+	app := NewApp(provider, AppOptions{
+		Stdin:       strings.NewReader(""),
+		Stdout:      &stdout,
+		NextMatches: 1,
+	})
+
+	teams := []string{"Flamengo", "Real Madrid"}
+	err := app.RunMultiple(context.Background(), teams)
+	if err != nil {
+		t.Fatalf("RunMultiple() error = %v", err)
+	}
+
+	output := stdout.String()
+
+	// Should contain output for both teams
+	if !strings.Contains(output, "Test League") {
+		t.Errorf("expected 'Test League' in output, got: %q", output)
+	}
+
+	// Should contain separator between teams
+	if !strings.Contains(output, "━") {
+		t.Errorf("expected separator between teams, got: %q", output)
+	}
+}

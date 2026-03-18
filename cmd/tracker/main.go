@@ -60,6 +60,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -L, --league string    Filter matches by league/competition name\n")
 		fmt.Fprintf(os.Stderr, "  -n, --next int         Number of upcoming matches to display (default 1 if -l is 0)\n")
 		fmt.Fprintf(os.Stderr, "  -t, --team string      Name of the team to search (default \"Fluminense\")\n")
+		fmt.Fprintf(os.Stderr, "                         Supports comma-separated list: \"Flamengo, Real Madrid\"\n")
 		fmt.Fprintf(os.Stderr, "  -v, --verbose          Show detailed log messages\n")
 	}
 	flag.Parse()
@@ -114,11 +115,33 @@ func main() {
 	case leagueName != "":
 		err = app.RunLeague(ctx, leagueName)
 	default:
-		err = app.Run(ctx, teamName)
+		// Support comma-separated team names: -team "Flamengo, Real Madrid, Arsenal"
+		teams := parseTeamList(teamName)
+		if len(teams) > 1 {
+			err = app.RunMultiple(ctx, teams)
+		} else {
+			err = app.Run(ctx, teams[0])
+		}
 	}
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// parseTeamList splits a comma-separated team name string into a trimmed slice.
+func parseTeamList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	var teams []string
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			teams = append(teams, t)
+		}
+	}
+	if len(teams) == 0 {
+		return []string{raw}
+	}
+	return teams
 }

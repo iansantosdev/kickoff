@@ -177,3 +177,20 @@ func (a *App) Run(ctx context.Context, teamQuery string) error {
 
 	return nil
 }
+
+// RunMultiple processes multiple team queries sequentially, printing
+// a visual separator between each team's results.
+func (a *App) RunMultiple(ctx context.Context, teamQueries []string) error {
+	separator := strings.Repeat("━", 40)
+
+	for i, query := range teamQueries {
+		if i > 0 {
+			fmt.Fprintf(a.opts.Stdout, "\n%s\n", dim(separator))
+		}
+
+		if err := a.Run(ctx, query); err != nil {
+			fmt.Fprintf(a.opts.Stdout, "⚠️  %s: %v\n", query, err)
+		}
+	}
+	return nil
+}
