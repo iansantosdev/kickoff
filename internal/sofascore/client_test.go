@@ -111,7 +111,17 @@ func TestGetMatches(t *testing.T) {
 					ID:             100,
 					StartTimestamp: 1709712000,
 					Tournament: struct {
-						Name string `json:"name"`
+						Name             string `json:"name"`
+						UniqueTournament *struct {
+							ID   int    `json:"id"`
+							Name string `json:"name"`
+						} `json:"uniqueTournament"`
+						Category *struct {
+							Name    string `json:"name"`
+							Country *struct {
+								Name string `json:"name"`
+							} `json:"country"`
+						} `json:"category"`
 					}{Name: "Brasileirão"},
 					Status: struct {
 						Code        int    `json:"code"`

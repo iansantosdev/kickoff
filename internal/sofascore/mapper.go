@@ -16,6 +16,12 @@ func mapEventToMatch(e sofascoreEvent) domain.Match {
 		League:     e.Tournament.Name,
 		StatusDesc: domain.StatusDescription(e.Status.Description),
 	}
+	if e.Tournament.UniqueTournament != nil {
+		m.LeagueID = e.Tournament.UniqueTournament.ID
+	}
+	if e.Tournament.Category != nil && e.Tournament.Category.Country != nil {
+		m.LeagueCountry = e.Tournament.Category.Country.Name
+	}
 
 	m.State, m.StatusDesc = mapStateAndDesc(e, m.StatusDesc)
 	m.Period = calculatePeriod(e, m.State)

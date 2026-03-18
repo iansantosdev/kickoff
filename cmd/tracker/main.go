@@ -21,6 +21,8 @@ func main() {
 	var nextMatches int
 	var lastMatches int
 	var verbose bool
+	var leagueName string
+	var featured string
 
 	defaultLang := os.Getenv("KICKOFF_LANG")
 	if defaultLang == "" {
@@ -44,12 +46,18 @@ func main() {
 	flag.IntVar(&lastMatches, "l", 0, "Shorthand for --last")
 	flag.BoolVar(&verbose, "verbose", false, "Show detailed log messages")
 	flag.BoolVar(&verbose, "v", false, "Shorthand for -verbose")
+	flag.StringVar(&leagueName, "league", "", "Filter matches by competition/league name (e.g. \"Champions League\")")
+	flag.StringVar(&leagueName, "L", "", "Shorthand for -league")
+	flag.StringVar(&featured, "featured", "", "Show featured matches for a period: today, tomorrow, week (hoje, amanhã, semana)")
+	flag.StringVar(&featured, "f", "", "Shorthand for -featured")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n\nOptions:\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  -c, --country string   Country code for TV broadcasts (e.g. BR, US, GB)\n")
+		fmt.Fprintf(os.Stderr, "  -f, --featured string  Show featured matches: today, tomorrow, week\n")
 		fmt.Fprintf(os.Stderr, "  -g, --lang string      Language to use: en, pt-BR, pt (default %q)\n", defaultLang)
 		fmt.Fprintf(os.Stderr, "  -l, --last int         Number of past matches to display (default 0)\n")
+		fmt.Fprintf(os.Stderr, "  -L, --league string    Filter matches by league/competition name\n")
 		fmt.Fprintf(os.Stderr, "  -n, --next int         Number of upcoming matches to display (default 1 if -l is 0)\n")
 		fmt.Fprintf(os.Stderr, "  -t, --team string      Name of the team to search (default \"Fluminense\")\n")
 		fmt.Fprintf(os.Stderr, "  -v, --verbose          Show detailed log messages\n")
@@ -98,7 +106,18 @@ func main() {
 		LastMatches: lastMatches,
 	})
 
-	if err := app.Run(ctx, teamName); err != nil {
+	var err error
+
+	switch {
+	case featured != "":
+		err = app.RunFeatured(ctx, featured)
+	case leagueName != "":
+		err = app.RunLeague(ctx, leagueName)
+	default:
+		err = app.Run(ctx, teamName)
+	}
+
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Erro: %v\n", err)
 		os.Exit(1)
 	}

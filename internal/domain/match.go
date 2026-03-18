@@ -41,23 +41,25 @@ type Score struct {
 }
 
 type Match struct {
-	EventID    int
-	ID         string
-	Date       time.Time
-	Name       string
-	League     string
-	Phase      string
-	Round      string
-	Venue      string
-	State      MatchState
-	StatusDesc StatusDescription
-	Clock      string
-	Period     int
-	HomeTeam   Team
-	AwayTeam   Team
-	HomeScore  Score
-	AwayScore  Score
-	Broadcasts []string
-	Notes      []string
-	Leg        int
+	EventID       int
+	ID            string
+	Date          time.Time
+	Name          string
+	League        string
+	LeagueID      int
+	LeagueCountry string
+	Phase         string
+	Round         string
+	Venue         string
+	State         MatchState
+	StatusDesc    StatusDescription
+	Clock         string
+	Period        int
+	HomeTeam      Team
+	AwayTeam      Team
+	HomeScore     Score
+	AwayScore     Score
+	Broadcasts    []string
+	Notes         []string
+	Leg           int
 }

@@ -47,7 +47,17 @@ type eventResponse struct {
 type sofascoreEvent struct {
 	ID         int `json:"id"`
 	Tournament struct {
-		Name string `json:"name"`
+		Name             string `json:"name"`
+		UniqueTournament *struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"uniqueTournament"`
+		Category *struct {
+			Name    string `json:"name"`
+			Country *struct {
+				Name string `json:"name"`
+			} `json:"country"`
+		} `json:"category"`
 	} `json:"tournament"`
 	RoundInfo *struct {
 		Round        int    `json:"round"`

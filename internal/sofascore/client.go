@@ -27,6 +27,7 @@ type Client struct {
 	eventURLTemplate           string
 	countryChannelsURLTemplate string
 	popularChannelsURLTemplate string
+	scheduledEventsURLTemplate string
 }
 
 // NewClient creates a new Sofascore API client.
@@ -43,6 +44,7 @@ func NewClient(httpClient *http.Client) *Client {
 		eventURLTemplate:           "https://api.sofascore.com/api/v1/event/%d",
 		countryChannelsURLTemplate: "https://api.sofascore.com/api/v1/tv/event/%d/country-channels",
 		popularChannelsURLTemplate: "https://api.sofascore.com/api/v1/tv/country/%s/popular-channels",
+		scheduledEventsURLTemplate: "https://api.sofascore.com/api/v1/sport/football/scheduled-events/%s",
 	}
 }
 
@@ -294,4 +296,23 @@ func (c *Client) enrichVenues(ctx context.Context, events []sofascoreEvent, limi
 
 Wait:
 	wg.Wait()
+}
+
+// GetScheduledEvents fetches all football events scheduled for a given date.
+// The date must be in YYYY-MM-DD format.
+func (c *Client) GetScheduledEvents(ctx context.Context, date string) (iter.Seq[domain.Match], error) {
+	reqURL := fmt.Sprintf(c.scheduledEventsURLTemplate, date)
+	resp, err := doRequest[eventsResponse](ctx, c.httpClient, reqURL)
+	if err != nil {
+		return nil, fmt.Errorf("scheduled events failed: %w", err)
+	}
+
+	return func(yield func(domain.Match) bool) {
+		for _, e := range resp.Events {
+			match := mapEventToMatch(e)
+			if !yield(match) {
+				return
+			}
+		}
+	}, nil
 }
