@@ -50,6 +50,54 @@ func TestMapEventToMatch_BasicFields(t *testing.T) {
 	}
 }
 
+func TestMapEventToMatch_TournamentMetadata(t *testing.T) {
+	event := sofascoreEvent{
+		Tournament: struct {
+			Name             string `json:"name"`
+			UniqueTournament *struct {
+				ID   int    `json:"id"`
+				Name string `json:"name"`
+			} `json:"uniqueTournament"`
+			Category *struct {
+				Name    string `json:"name"`
+				Country *struct {
+					Name string `json:"name"`
+				} `json:"country"`
+			} `json:"category"`
+		}{
+			Name: "Brasileirão Betano",
+			UniqueTournament: &struct {
+				ID   int    `json:"id"`
+				Name string `json:"name"`
+			}{ID: 325, Name: "Brasileirão Betano"},
+			Category: &struct {
+				Name    string `json:"name"`
+				Country *struct {
+					Name string `json:"name"`
+				} `json:"country"`
+			}{
+				Name: "Brazil",
+				Country: &struct {
+					Name string `json:"name"`
+				}{Name: "Brazil"},
+			},
+		},
+		Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Type: "notstarted"},
+	}
+
+	match := mapEventToMatch(event)
+	if match.LeagueID != 325 {
+		t.Fatalf("LeagueID = %d, want 325", match.LeagueID)
+	}
+	if match.LeagueCountry != "Brazil" {
+		t.Fatalf("LeagueCountry = %q, want %q", match.LeagueCountry, "Brazil")
+	}
+}
+
 func TestMapEventToMatch_StatusTypes(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -464,6 +512,132 @@ func TestCalculateLiveClock_StoppageTime(t *testing.T) {
 			got := calculateLiveClock(event, state)
 			if got != tt.wantClock {
 				t.Errorf("calculateLiveClock() = %q, want %q", got, tt.wantClock)
+			}
+		})
+	}
+}
+
+func TestCalculatePeriod_ByStatusCodeAndDescription(t *testing.T) {
+	tests := []struct {
+		name string
+		e    sofascoreEvent
+		want int
+	}{
+		{name: "status code extra", e: sofascoreEvent{Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Code: 10}}, want: 3},
+		{name: "status code penalties", e: sofascoreEvent{Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Code: 50}}, want: 5},
+		{name: "description penalties", e: sofascoreEvent{Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Description: "Penalties"}}, want: 5},
+		{name: "description ET", e: sofascoreEvent{Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Description: "ET"}}, want: 4},
+		{name: "code 11", e: sofascoreEvent{Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Code: 11}}, want: 3},
+		{name: "code 12", e: sofascoreEvent{Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Code: 12}}, want: 4},
+		{name: "description AET", e: sofascoreEvent{Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Description: "AET"}}, want: 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := calculatePeriod(tt.e, domain.StateIn)
+			if got != tt.want {
+				t.Fatalf("calculatePeriod() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPeriodBoundary_Default(t *testing.T) {
+	if got := periodBoundary("unknown"); got != 0 {
+		t.Fatalf("periodBoundary(default) = %d, want 0", got)
+	}
+}
+
+func TestCalculatePeriod_InProgressPenaltiesByScore(t *testing.T) {
+	p := 2
+	e := sofascoreEvent{
+		HomeScore: sofascoreScore{Penalties: &p},
+		Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Type: "inprogress"},
+	}
+	if got := calculatePeriod(e, domain.StateIn); got != 5 {
+		t.Fatalf("calculatePeriod(penalties score) = %d, want 5", got)
+	}
+}
+
+func TestMapEventToMatch_Minimal(t *testing.T) {
+	e := sofascoreEvent{
+		ID:             10,
+		StartTimestamp: 1893456000,
+		Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Type: "notstarted", Description: "Not started"},
+		Tournament: struct {
+			Name             string `json:"name"`
+			UniqueTournament *struct {
+				ID   int    `json:"id"`
+				Name string `json:"name"`
+			} `json:"uniqueTournament"`
+			Category *struct {
+				Name    string `json:"name"`
+				Country *struct {
+					Name string `json:"name"`
+				} `json:"country"`
+			} `json:"category"`
+		}{Name: "League"},
+		HomeTeam: sofascoreTeam{ID: 1, Name: "A"},
+		AwayTeam: sofascoreTeam{ID: 2, Name: "B"},
+	}
+	m := mapEventToMatch(e)
+	if m.League != "League" || m.LeagueID != 0 || m.LeagueCountry != "" {
+		t.Fatalf("unexpected minimal mapping: %#v", m)
+	}
+}
+
+func TestCalculatePeriod_ByLastPeriod(t *testing.T) {
+	tests := []struct {
+		last string
+		want int
+	}{
+		{last: "period1", want: 1},
+		{last: "period2", want: 2},
+		{last: "extra1", want: 3},
+		{last: "extra2", want: 4},
+		{last: "penalties", want: 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.last, func(t *testing.T) {
+			got := calculatePeriod(sofascoreEvent{LastPeriod: tt.last}, domain.StateIn)
+			if got != tt.want {
+				t.Fatalf("calculatePeriod(last=%s)=%d want=%d", tt.last, got, tt.want)
 			}
 		})
 	}

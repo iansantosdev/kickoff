@@ -97,6 +97,14 @@ func TestNormalizeCountry_Empty(t *testing.T) {
 	if got := NormalizeCountry(""); got != "" {
 		t.Errorf("NormalizeCountry(\"\") = %q, want empty", got)
 	}
+
+	if got := NormalizeCountry("  "); got != "" {
+		t.Errorf("NormalizeCountry(spaces) = %q, want empty", got)
+	}
+
+	if got := NormalizeCountry("unknown-land"); got != "UNKNOWN-LAND" {
+		t.Errorf("NormalizeCountry(unknown) = %q, want %q", got, "UNKNOWN-LAND")
+	}
 }
 
 func TestNormalizeCountry_InformalCode(t *testing.T) {

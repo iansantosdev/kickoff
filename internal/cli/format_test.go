@@ -126,6 +126,28 @@ func TestFormatMatch_PostponedMatch(t *testing.T) {
 	}
 }
 
+func TestFormatMatch_CanceledMatch(t *testing.T) {
+	match := domain.Match{
+		League: "Brasileirão",
+		HomeTeam: domain.Team{
+			ID:   "1",
+			Name: "Fluminense",
+		},
+		AwayTeam: domain.Team{
+			ID:   "2",
+			Name: "Palmeiras",
+		},
+		Date:       time.Date(2026, 3, 15, 21, 30, 0, 0, time.UTC),
+		State:      domain.StatePost,
+		StatusDesc: domain.StatusCanceled,
+	}
+
+	result := FormatMatch(match)
+	if !strings.Contains(result, "Canceled") {
+		t.Errorf("expected canceled indicator, got:\n%s", result)
+	}
+}
+
 func TestFormatMatch_WithVenue(t *testing.T) {
 	match := domain.Match{
 		League: "Brasileirão",
@@ -327,5 +349,174 @@ func TestFormatDateStr_RelativeToday(t *testing.T) {
 	}
 	if !strings.Contains(result, "21:30") {
 		t.Errorf("expected time 21:30, got: %q", result)
+	}
+}
+
+func TestWeekdayI18n_Default(t *testing.T) {
+	if got := weekdayI18n(time.Weekday(99)); got != "" {
+		t.Fatalf("weekdayI18n(default) = %q, want empty", got)
+	}
+}
+
+func TestFormatClock_DefaultPeriodAndParseError(t *testing.T) {
+	if got := formatClock("", 9, ""); got != "Period 9" {
+		t.Fatalf("formatClock empty/default = %q, want %q", got, "Period 9")
+	}
+
+	i18n.SetLanguage("pt-BR")
+	defer i18n.SetLanguage("en")
+
+	if got := formatClock("xx'", 2, ""); !strings.Contains(got, "2") {
+		t.Fatalf("expected parse fallback with period, got %q", got)
+	}
+}
+
+func TestFormatClock_RelativeExtraPeriods(t *testing.T) {
+	i18n.SetLanguage("pt-BR")
+	defer i18n.SetLanguage("en")
+
+	tests := []struct {
+		clock  string
+		period int
+		want   string
+	}{
+		{clock: "90+2'", period: 3, want: "1º tempo da prorrog."},
+		{clock: "110'", period: 4, want: "2º tempo da prorrog."},
+		{clock: "120'", period: 5, want: "Disputa de pênaltis"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := formatClock(tt.clock, tt.period, "")
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("formatClock(%q,%d) = %q, want contains %q", tt.clock, tt.period, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatMatch_NonMappedStatusFallback(t *testing.T) {
+	match := domain.Match{
+		League: "Test League",
+		HomeTeam: domain.Team{
+			ID:   "1",
+			Name: "A",
+		},
+		AwayTeam: domain.Team{
+			ID:   "2",
+			Name: "B",
+		},
+		Date:       time.Date(2026, 3, 15, 21, 30, 0, 0, time.UTC),
+		State:      domain.StatePre,
+		StatusDesc: domain.StatusDescription("Some Unknown Status"),
+	}
+
+	got := FormatMatch(match)
+	if !strings.Contains(got, "Some Unknown Status") {
+		t.Fatalf("expected fallback status text, got: %q", got)
+	}
+}
+
+func TestFormatMatchTitle_NoTeamIDsAndAggregateNote(t *testing.T) {
+	m := domain.Match{
+		Name:  "Unknown fixture",
+		Notes: []string{"Aggregate: 3-2"},
+	}
+	got := formatMatchTitle(m)
+	if !strings.Contains(got, "Unknown fixture") || !strings.Contains(strings.ToLower(got), "aggregate") {
+		t.Fatalf("unexpected title: %q", got)
+	}
+}
+
+func TestFormatMatchTitle_AggregateAndShootout(t *testing.T) {
+	m := domain.Match{
+		State:      domain.StatePost,
+		StatusDesc: domain.StatusDescription("Ended"),
+		Leg:        2,
+		HomeTeam:   domain.Team{ID: "1", Name: "A"},
+		AwayTeam:   domain.Team{ID: "2", Name: "B"},
+		HomeScore: domain.Score{
+			Value:        "1",
+			HasAggregate: true,
+			Aggregate:    3,
+			HasShootout:  true,
+			Shootout:     4,
+		},
+		AwayScore: domain.Score{
+			Value:        "1",
+			HasAggregate: true,
+			Aggregate:    3,
+			HasShootout:  true,
+			Shootout:     5,
+		},
+	}
+	got := formatMatchTitle(m)
+	if !strings.Contains(got, "2nd Leg") || !strings.Contains(got, "[4]") || !strings.Contains(got, "(3)") {
+		t.Fatalf("unexpected formatted title: %q", got)
+	}
+}
+
+func TestFormatMatchTitle_AggregatePreMatchAndNotes(t *testing.T) {
+	m := domain.Match{
+		State:      domain.StatePre,
+		StatusDesc: domain.StatusScheduled,
+		HomeTeam:   domain.Team{ID: "1", Name: "A"},
+		AwayTeam:   domain.Team{ID: "2", Name: "B"},
+		HomeScore: domain.Score{
+			HasAggregate: true,
+			Aggregate:    3,
+		},
+		AwayScore: domain.Score{
+			HasAggregate: true,
+			Aggregate:    2,
+		},
+		Notes: []string{"Aggregate: 3-2"},
+	}
+	got := formatMatchTitle(m)
+	if !strings.Contains(got, "(3)") || !strings.Contains(got, "(2)") {
+		t.Fatalf("expected aggregate values on pre-match title, got %q", got)
+	}
+}
+
+func TestFormatMatchTitle_AggregateNoteWithIDsNoAggregatedScores(t *testing.T) {
+	m := domain.Match{
+		Name:       "A x B",
+		State:      domain.StatePost,
+		StatusDesc: domain.StatusDescription("Ended"),
+		HomeTeam:   domain.Team{ID: "1", Name: "A"},
+		AwayTeam:   domain.Team{ID: "2", Name: "B"},
+		HomeScore:  domain.Score{Value: "1"},
+		AwayScore:  domain.Score{Value: "1"},
+		Notes:      []string{"Aggregate: 4-3"},
+	}
+	got := formatMatchTitle(m)
+	if !strings.Contains(strings.ToLower(got), "aggregate") {
+		t.Fatalf("expected aggregate note line, got %q", got)
+	}
+}
+
+func TestWeekdayI18n_AllDays(t *testing.T) {
+	days := []time.Weekday{
+		time.Sunday, time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday, time.Saturday,
+	}
+	for _, d := range days {
+		if got := weekdayI18n(d); got == "" {
+			t.Fatalf("weekdayI18n(%v) returned empty", d)
+		}
+	}
+}
+
+func TestFormatClock_RelativeFirstHalfExtraAndDefault(t *testing.T) {
+	i18n.SetLanguage("pt-BR")
+	defer i18n.SetLanguage("en")
+
+	got := formatClock("45+2'", 1, "")
+	if !strings.Contains(got, "1º tempo") {
+		t.Fatalf("expected 1st half relative clock, got %q", got)
+	}
+
+	got = formatClock("77'", 9, "")
+	if !strings.Contains(got, "Período 9") && !strings.Contains(got, "Período") {
+		t.Fatalf("expected default period fallback, got %q", got)
 	}
 }

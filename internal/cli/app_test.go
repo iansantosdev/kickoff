@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"iter"
 	"strings"
 	"testing"
@@ -15,6 +16,18 @@ import (
 type mockMatchProvider struct {
 	SearchTeamFunc func(ctx context.Context, query string) (iter.Seq[domain.Team], error)
 	getMatchesFunc func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error)
+}
+
+type errReader struct{}
+
+func (errReader) Read(p []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+func TestNewApp_DefaultIO(t *testing.T) {
+	p := &mockMatchProvider{}
+	app := NewApp(p, AppOptions{})
+	if app.opts.Stdin == nil || app.opts.Stdout == nil {
+		t.Fatal("expected default stdin/stdout to be set")
+	}
 }
 
 func (m *mockMatchProvider) SearchTeam(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
@@ -127,6 +140,52 @@ func TestApp_Run(t *testing.T) {
 	}
 }
 
+func TestApp_Run_InvalidChoiceAndReadError(t *testing.T) {
+	t.Run("invalid interactive option", func(t *testing.T) {
+		var stdout bytes.Buffer
+		provider := &mockMatchProvider{
+			SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+				return func(yield func(domain.Team) bool) {
+					if !yield(domain.Team{ID: "1", Name: "Alpha"}) {
+						return
+					}
+					yield(domain.Team{ID: "2", Name: "Alfa 2"})
+				}, nil
+			},
+		}
+		app := NewApp(provider, AppOptions{
+			Stdin:  strings.NewReader("99\n"),
+			Stdout: &stdout,
+		})
+		err := app.Run(context.Background(), "Al")
+		if err == nil {
+			t.Fatal("expected invalid option error")
+		}
+	})
+
+	t.Run("read input error", func(t *testing.T) {
+		var stdout bytes.Buffer
+		provider := &mockMatchProvider{
+			SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+				return func(yield func(domain.Team) bool) {
+					if !yield(domain.Team{ID: "1", Name: "Alpha"}) {
+						return
+					}
+					yield(domain.Team{ID: "2", Name: "Alfa 2"})
+				}, nil
+			},
+		}
+		app := NewApp(provider, AppOptions{
+			Stdin:  errReader{},
+			Stdout: &stdout,
+		})
+		err := app.Run(context.Background(), "Al")
+		if err == nil || !strings.Contains(err.Error(), "error reading input") {
+			t.Fatalf("expected read input error, got %v", err)
+		}
+	})
+}
+
 func TestApp_RunMultiple(t *testing.T) {
 	var stdout bytes.Buffer
 
@@ -170,5 +229,174 @@ func TestApp_RunMultiple(t *testing.T) {
 	// Should contain separator between teams
 	if !strings.Contains(output, "━") {
 		t.Errorf("expected separator between teams, got: %q", output)
+	}
+}
+
+func TestApp_RunMultiple_ContinuesOnError(t *testing.T) {
+	var stdout bytes.Buffer
+	provider := &mockMatchProvider{
+		SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+			return nil, errors.New("forced")
+		},
+	}
+	app := NewApp(provider, AppOptions{
+		Stdout: &stdout,
+	})
+
+	err := app.RunMultiple(context.Background(), []string{"A", "B"})
+	if err != nil {
+		t.Fatalf("RunMultiple should not return error, got %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "⚠️") {
+		t.Fatalf("expected warning output, got %q", out)
+	}
+}
+
+func TestApp_Run_NoMatchesAfterSelection(t *testing.T) {
+	var stdout bytes.Buffer
+	provider := &mockMatchProvider{
+		SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+			return func(yield func(domain.Team) bool) {
+				yield(domain.Team{ID: "1", Name: "Fluminense"})
+			}, nil
+		},
+		getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+			return func(yield func(domain.Match) bool) {}, nil
+		},
+	}
+	app := NewApp(provider, AppOptions{
+		Stdout: &stdout,
+		Stdin:  strings.NewReader(""),
+	})
+	if err := app.Run(context.Background(), "Fluminense"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "No match found for") {
+		t.Fatalf("expected no match output, got %q", stdout.String())
+	}
+}
+
+func TestApp_Run_SelectionBranchesAndCards(t *testing.T) {
+	t.Run("single non-exact candidate", func(t *testing.T) {
+		var stdout bytes.Buffer
+		provider := &mockMatchProvider{
+			SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+				return func(yield func(domain.Team) bool) {
+					yield(domain.Team{ID: "1", Name: "Fluminense FC"})
+				}, nil
+			},
+			getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+				return func(yield func(domain.Match) bool) {
+					yield(domain.Match{
+						League:     "A",
+						StatusDesc: domain.StatusScheduled,
+						HomeTeam:   domain.Team{ID: "1", Name: "X"},
+						AwayTeam:   domain.Team{ID: "2", Name: "Y"},
+					})
+				}, nil
+			},
+		}
+		app := NewApp(provider, AppOptions{Stdout: &stdout, Stdin: strings.NewReader("")})
+		if err := app.Run(context.Background(), "Fluminense"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(stdout.String(), "A") {
+			t.Fatalf("expected formatted match, got %q", stdout.String())
+		}
+	})
+
+	t.Run("multiple candidates with empty input selects first", func(t *testing.T) {
+		var stdout bytes.Buffer
+		provider := &mockMatchProvider{
+			SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+				return func(yield func(domain.Team) bool) {
+					if !yield(domain.Team{ID: "1", Name: "Alpha FC"}) {
+						return
+					}
+					yield(domain.Team{ID: "2", Name: "Alpha United"})
+				}, nil
+			},
+			getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+				return func(yield func(domain.Match) bool) {
+					yield(domain.Match{
+						League:     "League One",
+						StatusDesc: domain.StatusScheduled,
+						HomeTeam:   domain.Team{ID: "1", Name: "Home"},
+						AwayTeam:   domain.Team{ID: "2", Name: "Away"},
+					})
+				}, nil
+			},
+		}
+		app := NewApp(provider, AppOptions{Stdout: &stdout, Stdin: strings.NewReader("\n")})
+		if err := app.Run(context.Background(), "Alpha"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(stdout.String(), "League One") {
+			t.Fatalf("expected selected match output, got %q", stdout.String())
+		}
+	})
+
+	t.Run("multiple candidates with numeric input", func(t *testing.T) {
+		var stdout bytes.Buffer
+		provider := &mockMatchProvider{
+			SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+				return func(yield func(domain.Team) bool) {
+					if !yield(domain.Team{ID: "1", Name: "Alpha FC"}) {
+						return
+					}
+					yield(domain.Team{ID: "2", Name: "Alpha United"})
+				}, nil
+			},
+			getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+				if teamID != "2" {
+					t.Fatalf("expected selection of second team, got %s", teamID)
+				}
+				return func(yield func(domain.Match) bool) {
+					if !yield(domain.Match{
+						League:     "League A",
+						StatusDesc: domain.StatusScheduled,
+						HomeTeam:   domain.Team{ID: "1", Name: "A"},
+						AwayTeam:   domain.Team{ID: "2", Name: "B"},
+					}) {
+						return
+					}
+					yield(domain.Match{
+						League:     "League B",
+						StatusDesc: domain.StatusScheduled,
+						HomeTeam:   domain.Team{ID: "3", Name: "C"},
+						AwayTeam:   domain.Team{ID: "4", Name: "D"},
+					})
+				}, nil
+			},
+		}
+		app := NewApp(provider, AppOptions{Stdout: &stdout, Stdin: strings.NewReader("2\n")})
+		if err := app.Run(context.Background(), "Alpha"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		out := stdout.String()
+		if !strings.Contains(out, "League A") || !strings.Contains(out, "League B") {
+			t.Fatalf("expected both matches in output, got %q", out)
+		}
+	})
+}
+
+func TestApp_Run_GetMatchesError(t *testing.T) {
+	provider := &mockMatchProvider{
+		SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+			return func(yield func(domain.Team) bool) {
+				yield(domain.Team{ID: "10", Name: "Fluminense"})
+			}, nil
+		},
+		getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+			return nil, errors.New("boom matches")
+		},
+	}
+
+	var stdout bytes.Buffer
+	app := NewApp(provider, AppOptions{Stdout: &stdout, Stdin: strings.NewReader("")})
+	err := app.Run(context.Background(), "Fluminense")
+	if err == nil || !strings.Contains(err.Error(), "boom matches") {
+		t.Fatalf("expected wrapped get matches error, got %v", err)
 	}
 }
