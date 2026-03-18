@@ -50,7 +50,7 @@ go install github.com/iansantosdev/kickoff/cmd/tracker@latest
 ```bash
 git clone https://github.com/iansantosdev/kickoff.git
 cd kickoff
-make
+just build-release
 ```
 The optimized binary will be generated at `./bin/kickoff`.
 
@@ -100,15 +100,23 @@ You can persist your preferences by setting these in your `.bashrc` or `.zshrc`:
 
 ## Development & Architecture
 
-### Makefile Commands
+### Development Prerequisites
+- [`just`](https://github.com/casey/just): task runner used for local development commands.
+- [`golangci-lint`](https://golangci-lint.run/): lint aggregator used in `just lint`.
+- `cc` (C compiler): required only for `just test-race` (`go test -race`).
+
+### Just Commands
 | Command | Description |
 |:---|:---|
-| `make` | Generate an optimized, stripped production binary (default) |
-| `make run` | Run the application in development mode |
-| `make build-obfuscated` | Generate a protected binary using [Garble](https://github.com/burrowers/garble) |
-| `make test` | Run the comprehensive test suite |
-| `make lint` | Run static analysis (golangci-lint) |
-| `make check` | Run both lint and test |
+| `just` or `just build-release` | Generate an optimized, stripped production binary (default) |
+| `just run -- <args>` | Run the application in development mode |
+| `just build-obfuscated` | Generate a protected binary using [Garble](https://github.com/burrowers/garble) |
+| `just test` | Run the comprehensive test suite |
+| `just test-race` | Run tests with race detector (requires `cc`) |
+| `just vet` | Run `go vet` checks |
+| `just lint` | Run static analysis (golangci-lint) |
+| `just check` | Run lint and tests |
+| `just qa` | Run format check + vet + lint + tests |
 
 ### Internal Structure
 The project follows a clean architecture pattern:
