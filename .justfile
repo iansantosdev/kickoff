@@ -2,7 +2,7 @@ set shell := ["bash", "-cu"]
 
 app_name := "kickoff"
 build_dir := "bin"
-main_pkg := "./cmd/tracker"
+main_pkg := "./cmd/kickoff"
 
 default: build-release
 
