@@ -8,6 +8,7 @@ import (
 	"iter"
 	"net/http"
 	"net/url"
+	"sort"
 	"sync"
 	"time"
 
@@ -28,6 +29,8 @@ type Client struct {
 	countryChannelsURLTemplate string
 	popularChannelsURLTemplate string
 	scheduledEventsURLTemplate string
+	popularChannelsMu          sync.Mutex
+	popularChannelsCache       map[string]map[int]string
 }
 
 // NewClient creates a new Sofascore API client.
@@ -45,6 +48,7 @@ func NewClient(httpClient *http.Client) *Client {
 		countryChannelsURLTemplate: "https://api.sofascore.com/api/v1/tv/event/%d/country-channels",
 		popularChannelsURLTemplate: "https://api.sofascore.com/api/v1/tv/country/%s/popular-channels",
 		scheduledEventsURLTemplate: "https://api.sofascore.com/api/v1/sport/football/scheduled-events/%s",
+		popularChannelsCache:       make(map[string]map[int]string),
 	}
 }
 
@@ -106,6 +110,94 @@ func doRequest[T any](ctx context.Context, c *http.Client, reqURL string) (T, er
 	return result, errors.Join(errs...)
 }
 
+func sortEventsByStart(events []sofascoreEvent) {
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].StartTimestamp == events[j].StartTimestamp {
+			return events[i].ID < events[j].ID
+		}
+		return events[i].StartTimestamp < events[j].StartTimestamp
+	})
+}
+
+func dedupeEventsByID(events []sofascoreEvent) []sofascoreEvent {
+	seen := make(map[int]struct{}, len(events))
+	out := make([]sofascoreEvent, 0, len(events))
+	for _, event := range events {
+		if event.ID == 0 {
+			out = append(out, event)
+			continue
+		}
+		if _, ok := seen[event.ID]; ok {
+			continue
+		}
+		seen[event.ID] = struct{}{}
+		out = append(out, event)
+	}
+	return out
+}
+
+func recentFinishedEvents(events []sofascoreEvent, limit int) []sofascoreEvent {
+	if limit <= 0 {
+		return nil
+	}
+
+	finished := make([]sofascoreEvent, 0, limit)
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Status.Type != "finished" {
+			continue
+		}
+
+		finished = append(finished, event)
+		if len(finished) >= limit {
+			break
+		}
+	}
+
+	return finished
+}
+
+func recentUpcomingEvents(events []sofascoreEvent) []sofascoreEvent {
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+
+	upcoming := make([]sofascoreEvent, 0, len(events))
+	for _, event := range events {
+		eventTime := time.Unix(event.StartTimestamp, 0).In(time.Local)
+		if event.Status.Type == "inprogress" {
+			upcoming = append(upcoming, event)
+			continue
+		}
+		if eventTime.Before(todayStart) {
+			continue
+		}
+		if event.Status.Type == "finished" {
+			continue
+		}
+		upcoming = append(upcoming, event)
+	}
+
+	sortEventsByStart(upcoming)
+	return upcoming
+}
+
+func isMensFootballEvent(event sofascoreEvent) bool {
+	if event.EventFilters != nil && len(event.EventFilters.Gender) > 0 {
+		for _, gender := range event.EventFilters.Gender {
+			if gender == "M" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if event.HomeTeam.Gender != "" || event.AwayTeam.Gender != "" {
+		return event.HomeTeam.Gender == "M" && event.AwayTeam.Gender == "M"
+	}
+
+	return true
+}
+
 // SearchTeam queries the Sofascore search API and yields male football teams
 // matching the query.
 func (c *Client) SearchTeam(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
@@ -135,82 +227,59 @@ func (c *Client) SearchTeam(ctx context.Context, query string) (iter.Seq[domain.
 // GetMatches fetches events for a team. It supports separating the number of last
 // played queries and upcoming match queries independently.
 func (c *Client) GetMatches(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
-	var combined []sofascoreEvent
+	combined := make([]sofascoreEvent, 0, nextLimit+lastLimit+4)
 
-	if lastLimit > 0 {
+	var (
+		lastResp eventsResponse
+		haveLast bool
+	)
+
+	if nextLimit > 0 || lastLimit > 0 {
 		lastURL := fmt.Sprintf(c.teamLastURLTemplate, teamID)
-		lastResp, err := doRequest[eventsResponse](ctx, c.httpClient, lastURL)
-		if err != nil && !errors.Is(err, errNotFound) {
-			return nil, fmt.Errorf("failed to fetch recent events: %w", err)
-		} else if err == nil {
-			var finished []sofascoreEvent
-			now := time.Now()
-			// A past match can be any match before today or already strictly finished.
-			todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-
-			for _, e := range lastResp.Events {
-				eventTime := time.Unix(e.StartTimestamp, 0)
-				if e.Status.Type == "finished" && eventTime.Before(todayStart) {
-					finished = append(finished, e)
-				} else if e.Status.Type == "finished" && (eventTime.Equal(todayStart) || eventTime.After(todayStart)) {
-					// It's finished today, should be included as past
-					finished = append(finished, e)
-				}
+		resp, err := doRequest[eventsResponse](ctx, c.httpClient, lastURL)
+		if err != nil {
+			if !errors.Is(err, errNotFound) {
+				return nil, fmt.Errorf("failed to fetch recent events: %w", err)
 			}
-
-			// We reverse them to show the most recent first up to limit.
-			for i := len(finished) - 1; i >= 0; i-- {
-				combined = append(combined, finished[i])
-				if len(combined) >= lastLimit {
-					break
-				}
-			}
+		} else {
+			lastResp = resp
+			haveLast = true
 		}
 	}
 
+	if haveLast && lastLimit > 0 {
+		combined = append(combined, recentFinishedEvents(lastResp.Events, lastLimit)...)
+	}
+
 	if nextLimit > 0 {
-		// Only fetch recent events for live and today's matches if we are asking for upcoming matches
-		lastURL := fmt.Sprintf(c.teamLastURLTemplate, teamID)
-		lastResp, err := doRequest[eventsResponse](ctx, c.httpClient, lastURL)
-		if err != nil && !errors.Is(err, errNotFound) {
-			return nil, fmt.Errorf("failed to fetch recent events: %w", err)
-		} else if err == nil {
-			now := time.Now()
-			todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-
-			for _, e := range lastResp.Events {
-				eventTime := time.Unix(e.StartTimestamp, 0)
-				isLive := e.Status.Type == "inprogress"
-				isToday := eventTime.After(todayStart) || eventTime.Equal(todayStart)
-
-				if isLive || isToday {
-					combined = append(combined, e)
-				}
-			}
+		upcoming := make([]sofascoreEvent, 0, nextLimit+4)
+		if haveLast {
+			upcoming = append(upcoming, recentUpcomingEvents(lastResp.Events)...)
 		}
 
-		// Fetch upcoming events.
 		nextURL := fmt.Sprintf(c.teamNextURLTemplate, teamID)
 		nextResp, err := doRequest[eventsResponse](ctx, c.httpClient, nextURL)
 		if err != nil {
-			if len(combined) == 0 {
+			if len(upcoming) == 0 {
 				return nil, fmt.Errorf("teams API failed: %w", err)
 			}
-			// If we got recent events but next/0 failed, we shouldn't just swallow it based on our rules.
 			if !errors.Is(err, errNotFound) {
 				return nil, fmt.Errorf("failed to fetch upcoming events: %w", err)
 			}
 		} else {
-			for i, nextEvent := range nextResp.Events {
-				if i >= nextLimit {
-					break // Enforce next matches limit
-				}
-				combined = append(combined, nextEvent)
-			}
+			upcoming = append(upcoming, nextResp.Events...)
 		}
+
+		upcoming = dedupeEventsByID(upcoming)
+		sortEventsByStart(upcoming)
+		if len(upcoming) > nextLimit {
+			upcoming = upcoming[:nextLimit]
+		}
+		combined = append(combined, upcoming...)
 	}
 
-	c.enrichVenues(ctx, combined, nextLimit+lastLimit)
+	combined = dedupeEventsByID(combined)
+	c.enrichVenues(ctx, combined, len(combined))
 
 	return func(yield func(domain.Match) bool) {
 		for _, e := range combined {
@@ -220,6 +289,29 @@ func (c *Client) GetMatches(ctx context.Context, teamID string, nextLimit, lastL
 			}
 		}
 	}, nil
+}
+
+func (c *Client) popularChannelsByCountry(ctx context.Context, countryCode string) (map[int]string, error) {
+	c.popularChannelsMu.Lock()
+	defer c.popularChannelsMu.Unlock()
+
+	if nameByID, ok := c.popularChannelsCache[countryCode]; ok {
+		return nameByID, nil
+	}
+
+	popURL := fmt.Sprintf(c.popularChannelsURLTemplate, countryCode)
+	popResp, err := doRequest[popularChannelsResponse](ctx, c.httpClient, popURL)
+	if err != nil {
+		return nil, err
+	}
+
+	nameByID := make(map[int]string, len(popResp.Channels))
+	for _, ch := range popResp.Channels {
+		nameByID[ch.ID] = ch.Name
+	}
+
+	c.popularChannelsCache[countryCode] = nameByID
+	return nameByID, nil
 }
 
 // GetBroadcasts returns TV channel names for a given event and country.
@@ -237,16 +329,10 @@ func (c *Client) GetBroadcasts(ctx context.Context, eventID int, countryCode str
 		return nil
 	}
 
-	popURL := fmt.Sprintf(c.popularChannelsURLTemplate, countryCode)
-	popResp, err := doRequest[popularChannelsResponse](ctx, c.httpClient, popURL)
+	nameByID, err := c.popularChannelsByCountry(ctx, countryCode)
 	if err != nil {
 		// Log or Return: Silent return because this is non-fatal enhancement data
 		return nil
-	}
-
-	nameByID := make(map[int]string, len(popResp.Channels))
-	for _, ch := range popResp.Channels {
-		nameByID[ch.ID] = ch.Name
 	}
 
 	var names []string
@@ -312,6 +398,9 @@ func (c *Client) GetScheduledEvents(ctx context.Context, date string) (iter.Seq[
 
 	return func(yield func(domain.Match) bool) {
 		for _, e := range resp.Events {
+			if !isMensFootballEvent(e) {
+				continue
+			}
 			match := mapEventToMatch(e)
 			if !yield(match) {
 				return

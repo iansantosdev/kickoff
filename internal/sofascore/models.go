@@ -30,6 +30,7 @@ type sofascoreTeam struct {
 	ID        int    `json:"id"`
 	Name      string `json:"name"`
 	ShortName string `json:"shortName"`
+	Gender    string `json:"gender"`
 }
 
 type sofascoreScore struct {
@@ -78,7 +79,10 @@ type sofascoreEvent struct {
 	AwayScore      sofascoreScore `json:"awayScore"`
 	StartTimestamp int64          `json:"startTimestamp"`
 	LastPeriod     string         `json:"lastPeriod"`
-	Time           *struct {
+	EventFilters   *struct {
+		Gender []string `json:"gender"`
+	} `json:"eventFilters"`
+	Time *struct {
 		CurrentPeriodStart int64 `json:"currentPeriodStartTimestamp"`
 		Initial            int   `json:"initial"`
 		AddedTime          *int  `json:"addedTime"`

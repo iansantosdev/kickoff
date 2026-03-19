@@ -567,6 +567,53 @@ func TestGetBroadcasts_PopularChannelsError(t *testing.T) {
 	}
 }
 
+func TestGetBroadcasts_CachesPopularChannelsByCountry(t *testing.T) {
+	countryURL := "https://example.test/tv/event/1"
+	popularURL := "https://example.test/tv/country/BR"
+
+	client := NewClient(&http.Client{
+		Transport: &sequenceRoundTripper{
+			responses: map[string][]mockResponse{
+				countryURL: {
+					{
+						status: http.StatusOK,
+						body: mustJSON(t, countryChannelsResponse{
+							CountryChannels: map[string][]int{"BR": {10}},
+						}),
+					},
+					{
+						status: http.StatusOK,
+						body: mustJSON(t, countryChannelsResponse{
+							CountryChannels: map[string][]int{"BR": {10}},
+						}),
+					},
+				},
+				popularURL: {
+					{
+						status: http.StatusOK,
+						body: mustJSON(t, popularChannelsResponse{
+							Channels: []tvChannel{{ID: 10, Name: "Globo"}},
+						}),
+					},
+				},
+			},
+			errors: map[string][]error{},
+		},
+	})
+	client.countryChannelsURLTemplate = "https://example.test/tv/event/%d"
+	client.popularChannelsURLTemplate = "https://example.test/tv/country/%s"
+
+	first := client.GetBroadcasts(context.Background(), 1, "BR")
+	second := client.GetBroadcasts(context.Background(), 1, "BR")
+
+	if len(first) != 1 || first[0] != "Globo" {
+		t.Fatalf("unexpected first result: %v", first)
+	}
+	if len(second) != 1 || second[0] != "Globo" {
+		t.Fatalf("expected cached popular channels on second call, got %v", second)
+	}
+}
+
 func TestNewClient_NilUsesDefault(t *testing.T) {
 	client := NewClient(nil)
 	if client.httpClient == nil {
@@ -587,6 +634,142 @@ func TestNewClient_CustomClient(t *testing.T) {
 
 func contains(s, sub string) bool {
 	return bytes.Contains([]byte(s), []byte(sub))
+}
+
+func TestSortEventsByStart_TieBreakByID(t *testing.T) {
+	events := []sofascoreEvent{
+		{ID: 2, StartTimestamp: 100},
+		{ID: 1, StartTimestamp: 100},
+		{ID: 3, StartTimestamp: 200},
+	}
+
+	sortEventsByStart(events)
+
+	if events[0].ID != 1 || events[1].ID != 2 || events[2].ID != 3 {
+		t.Fatalf("unexpected sort order: %#v", events)
+	}
+}
+
+func TestDedupeEventsByID_ZeroAndDuplicateIDs(t *testing.T) {
+	events := []sofascoreEvent{
+		{ID: 0, StartTimestamp: 1},
+		{ID: 10, StartTimestamp: 2},
+		{ID: 10, StartTimestamp: 3},
+		{ID: 0, StartTimestamp: 4},
+	}
+
+	got := dedupeEventsByID(events)
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 events after dedupe, got %#v", got)
+	}
+	if got[0].ID != 0 || got[1].ID != 10 || got[2].ID != 0 {
+		t.Fatalf("unexpected deduped order: %#v", got)
+	}
+}
+
+func TestRecentFinishedEvents(t *testing.T) {
+	events := []sofascoreEvent{
+		{ID: 1, Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Type: "notstarted"}},
+		{ID: 2, Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Type: "finished"}},
+		{ID: 3, Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Type: "inprogress"}},
+		{ID: 4, Status: struct {
+			Code        int    `json:"code"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+		}{Type: "finished"}},
+	}
+
+	if got := recentFinishedEvents(events, 0); got != nil {
+		t.Fatalf("expected nil for zero limit, got %#v", got)
+	}
+
+	got := recentFinishedEvents(events, 2)
+	if len(got) != 2 || got[0].ID != 4 || got[1].ID != 2 {
+		t.Fatalf("unexpected finished events: %#v", got)
+	}
+}
+
+func TestRecentUpcomingEvents_SkipsPastAndFinished(t *testing.T) {
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+
+	events := []sofascoreEvent{
+		{
+			ID:             1,
+			StartTimestamp: todayStart.Add(-time.Hour).Unix(),
+			Status: struct {
+				Code        int    `json:"code"`
+				Description string `json:"description"`
+				Type        string `json:"type"`
+			}{Type: "notstarted"},
+		},
+		{
+			ID:             2,
+			StartTimestamp: todayStart.Add(2 * time.Hour).Unix(),
+			Status: struct {
+				Code        int    `json:"code"`
+				Description string `json:"description"`
+				Type        string `json:"type"`
+			}{Type: "finished"},
+		},
+		{
+			ID:             3,
+			StartTimestamp: todayStart.Add(4 * time.Hour).Unix(),
+			Status: struct {
+				Code        int    `json:"code"`
+				Description string `json:"description"`
+				Type        string `json:"type"`
+			}{Type: "notstarted"},
+		},
+		{
+			ID:             4,
+			StartTimestamp: todayStart.Add(-2 * time.Hour).Unix(),
+			Status: struct {
+				Code        int    `json:"code"`
+				Description string `json:"description"`
+				Type        string `json:"type"`
+			}{Type: "inprogress"},
+		},
+	}
+
+	got := recentUpcomingEvents(events)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 upcoming events, got %#v", got)
+	}
+	if got[0].ID != 4 || got[1].ID != 3 {
+		t.Fatalf("unexpected upcoming order: %#v", got)
+	}
+}
+
+func TestIsMensFootballEvent_FallbackToTeamGender(t *testing.T) {
+	men := sofascoreEvent{
+		HomeTeam: sofascoreTeam{Gender: "M"},
+		AwayTeam: sofascoreTeam{Gender: "M"},
+	}
+	if !isMensFootballEvent(men) {
+		t.Fatal("expected men's teams fallback to be accepted")
+	}
+
+	mixed := sofascoreEvent{
+		HomeTeam: sofascoreTeam{Gender: "M"},
+		AwayTeam: sofascoreTeam{Gender: "F"},
+	}
+	if isMensFootballEvent(mixed) {
+		t.Fatal("expected mixed-gender fallback to be rejected")
+	}
 }
 
 func TestDoRequest_NotFoundSentinel(t *testing.T) {
@@ -858,6 +1041,62 @@ func TestGetMatches_UpcomingLimitStopsIteration(t *testing.T) {
 	}
 }
 
+func TestGetMatches_NextAndLastAvoidDuplicateSameEvent(t *testing.T) {
+	lastURL := "https://example.test/team/1/last"
+	nextURL := "https://example.test/team/1/next"
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+
+	client := NewClient(newMockClient(map[string]mockResponse{
+		lastURL: {status: http.StatusOK, body: mustJSON(t, eventsResponse{Events: []sofascoreEvent{
+			{
+				ID:             10,
+				StartTimestamp: todayStart.Add(2 * time.Hour).Unix(),
+				Status: struct {
+					Code        int    `json:"code"`
+					Description string `json:"description"`
+					Type        string `json:"type"`
+				}{Type: "finished"},
+				HomeTeam: sofascoreTeam{Name: "A"},
+				AwayTeam: sofascoreTeam{Name: "B"},
+			},
+		}})},
+		nextURL: {status: http.StatusOK, body: mustJSON(t, eventsResponse{Events: []sofascoreEvent{
+			{
+				ID:             20,
+				StartTimestamp: now.Add(24 * time.Hour).Unix(),
+				Status: struct {
+					Code        int    `json:"code"`
+					Description string `json:"description"`
+					Type        string `json:"type"`
+				}{Type: "notstarted"},
+				HomeTeam: sofascoreTeam{Name: "C"},
+				AwayTeam: sofascoreTeam{Name: "D"},
+			},
+		}})},
+	}))
+	client.teamLastURLTemplate = "https://example.test/team/%s/last"
+	client.teamNextURLTemplate = "https://example.test/team/%s/next"
+	client.eventURLTemplate = "https://example.test/event/%d"
+
+	seq, err := client.GetMatches(context.Background(), "1", 1, 1)
+	if err != nil {
+		t.Fatalf("GetMatches error: %v", err)
+	}
+
+	ids := make([]int, 0, 2)
+	for match := range seq {
+		ids = append(ids, match.EventID)
+	}
+
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 unique events, got %v", ids)
+	}
+	if ids[0] != 10 || ids[1] != 20 {
+		t.Fatalf("expected [10 20], got %v", ids)
+	}
+}
+
 func TestEnrichVenues_SelectCtxDonePath(t *testing.T) {
 	client := NewClient(&http.Client{Transport: waitForCancelRoundTripper{}})
 	client.eventURLTemplate = "https://example.test/event/%d"
@@ -938,6 +1177,57 @@ func TestGetScheduledEvents_Error(t *testing.T) {
 	_, err := client.GetScheduledEvents(context.Background(), "2026-03-18")
 	if err == nil || !contains(err.Error(), "scheduled events failed") {
 		t.Fatalf("expected scheduled events failure, got %v", err)
+	}
+}
+
+func TestGetScheduledEvents_FiltersWomenCompetitions(t *testing.T) {
+	url := "https://example.test/scheduled/2026-03-18"
+	client := NewClient(newMockClient(map[string]mockResponse{
+		url: {status: http.StatusOK, body: mustJSON(t, eventsResponse{Events: []sofascoreEvent{
+			{
+				ID: 1,
+				HomeTeam: sofascoreTeam{
+					Name:   "Barcelona",
+					Gender: "M",
+				},
+				AwayTeam: sofascoreTeam{
+					Name:   "Liverpool",
+					Gender: "M",
+				},
+				EventFilters: &struct {
+					Gender []string `json:"gender"`
+				}{Gender: []string{"M"}},
+			},
+			{
+				ID: 2,
+				HomeTeam: sofascoreTeam{
+					Name:   "Barcelona Women",
+					Gender: "F",
+				},
+				AwayTeam: sofascoreTeam{
+					Name:   "Chelsea Women",
+					Gender: "F",
+				},
+				EventFilters: &struct {
+					Gender []string `json:"gender"`
+				}{Gender: []string{"F"}},
+			},
+		}})},
+	}))
+	client.scheduledEventsURLTemplate = "https://example.test/scheduled/%s"
+
+	seq, err := client.GetScheduledEvents(context.Background(), "2026-03-18")
+	if err != nil {
+		t.Fatalf("GetScheduledEvents error: %v", err)
+	}
+
+	ids := make([]int, 0, 1)
+	for match := range seq {
+		ids = append(ids, match.EventID)
+	}
+
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("expected only men's event, got %v", ids)
 	}
 }
 
