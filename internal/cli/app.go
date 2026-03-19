@@ -29,6 +29,11 @@ type BroadcastProvider interface {
 	GetBroadcasts(ctx context.Context, eventID int, countryCode string) []string
 }
 
+// VenueProvider defines the interface for enriching venue data for matches.
+type VenueProvider interface {
+	PopulateVenues(ctx context.Context, matches []domain.Match)
+}
+
 // AppOptions holds configuration options for the CLI application.
 type AppOptions struct {
 	CountryCode string
@@ -44,6 +49,7 @@ type AppOptions struct {
 type App struct {
 	provider    MatchProvider
 	broadcaster BroadcastProvider
+	venueSource VenueProvider
 	opts        AppOptions
 }
 
@@ -104,7 +110,17 @@ func NewApp(p MatchProvider, opts AppOptions) *App {
 	if bp, ok := p.(BroadcastProvider); ok {
 		a.broadcaster = bp
 	}
+	if vp, ok := p.(VenueProvider); ok {
+		a.venueSource = vp
+	}
 	return a
+}
+
+func (a *App) enrichVenues(ctx context.Context, matches []domain.Match) {
+	if a.venueSource == nil || len(matches) == 0 {
+		return
+	}
+	a.venueSource.PopulateVenues(ctx, matches)
 }
 
 func promptTeamChoice(stdin io.Reader, stdout io.Writer, tr i18n.Bundle, query string, teams []domain.Team) (domain.Team, error) {

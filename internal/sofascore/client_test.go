@@ -940,3 +940,47 @@ func TestGetScheduledEvents_Error(t *testing.T) {
 		t.Fatalf("expected scheduled events failure, got %v", err)
 	}
 }
+
+func TestPopulateVenues(t *testing.T) {
+	client := NewClient(newMockClient(map[string]mockResponse{
+		"https://example.test/event/10": {status: http.StatusOK, body: `{"event":{"id":10,"venue":{"name":"Maracana"}}}`},
+	}))
+	client.eventURLTemplate = "https://example.test/event/%d"
+
+	matches := []domain.Match{
+		{EventID: 10, League: "Brasileirão"},
+		{EventID: 0, League: "No Event"},
+	}
+
+	client.PopulateVenues(context.Background(), matches)
+
+	if matches[0].Venue != "Maracana" {
+		t.Fatalf("expected venue enrichment, got %q", matches[0].Venue)
+	}
+}
+
+func TestPopulateVenues_NoOpBranches(t *testing.T) {
+	client := NewClient(newMockClient(map[string]mockResponse{
+		"https://example.test/event/30": {status: http.StatusOK, body: `{"event":{"id":30,"venue":{"name":""}}}`},
+	}))
+	client.eventURLTemplate = "https://example.test/event/%d"
+
+	client.PopulateVenues(context.Background(), nil)
+
+	matches := []domain.Match{
+		{EventID: 0, League: "Skip zero"},
+		{EventID: 20, Venue: "Already set"},
+	}
+	client.PopulateVenues(context.Background(), matches)
+
+	if matches[1].Venue != "Already set" {
+		t.Fatalf("expected existing venue to remain untouched, got %q", matches[1].Venue)
+	}
+
+	emptyVenue := []domain.Match{{EventID: 30, League: "No venue yet"}}
+	client.PopulateVenues(context.Background(), emptyVenue)
+
+	if emptyVenue[0].Venue != "" {
+		t.Fatalf("expected empty venue response to be skipped, got %q", emptyVenue[0].Venue)
+	}
+}

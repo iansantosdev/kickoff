@@ -446,6 +446,7 @@ func (a *App) RunLeagueForPeriod(ctx context.Context, leagueName, period string)
 	filtered := filterBySelectedLeague(all, selectedLeague)
 	filtered = a.applyMatchLimit(filtered)
 
+	a.enrichVenues(ctx, filtered)
 	a.enrichBroadcasts(ctx, filtered)
 
 	fmt.Fprintln(a.opts.Stdout)
@@ -496,6 +497,7 @@ func (a *App) RunLeagueForPeriodForTeam(ctx context.Context, leagueName, period,
 		return nil
 	}
 
+	a.enrichVenues(ctx, teamFiltered)
 	a.enrichBroadcasts(ctx, teamFiltered)
 
 	for i, m := range teamFiltered {
@@ -542,6 +544,7 @@ func (a *App) RunFeatured(ctx context.Context, period string) error {
 		return nil
 	}
 
+	a.enrichVenues(ctx, allFeatured)
 	a.enrichBroadcasts(ctx, allFeatured)
 
 	for i, m := range allFeatured {
@@ -590,6 +593,7 @@ func (a *App) RunFeaturedForTeam(ctx context.Context, period, teamQuery string) 
 		return nil
 	}
 
+	a.enrichVenues(ctx, filtered)
 	a.enrichBroadcasts(ctx, filtered)
 
 	for i, m := range filtered {

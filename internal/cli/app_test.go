@@ -512,6 +512,32 @@ func TestApp_enrichBroadcasts_CancelWhileSemaphoreFull(t *testing.T) {
 	}
 }
 
+func TestApp_enrichVenues_NoSource(t *testing.T) {
+	app := NewApp(&mockMatchProvider{}, AppOptions{})
+	app.enrichVenues(context.Background(), []domain.Match{{EventID: 1}})
+}
+
+func TestApp_enrichVenues_PopulatesMatches(t *testing.T) {
+	called := false
+	provider := &mockAppDataProvider{
+		populateVenuesFunc: func(ctx context.Context, matches []domain.Match) {
+			called = true
+			matches[0].Venue = "Maracana"
+		},
+	}
+	app := NewApp(provider, AppOptions{})
+
+	matches := []domain.Match{{EventID: 10}}
+	app.enrichVenues(context.Background(), matches)
+
+	if !called {
+		t.Fatal("expected venue provider to be called")
+	}
+	if matches[0].Venue != "Maracana" {
+		t.Fatalf("expected venue to be populated, got %q", matches[0].Venue)
+	}
+}
+
 func TestApp_Run_ExactMatchPromptError(t *testing.T) {
 	var stdout bytes.Buffer
 	provider := &mockMatchProvider{

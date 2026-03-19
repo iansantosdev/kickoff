@@ -319,3 +319,33 @@ func (c *Client) GetScheduledEvents(ctx context.Context, date string) (iter.Seq[
 		}
 	}, nil
 }
+
+// PopulateVenues enriches the provided matches with venue data using the event details endpoint.
+func (c *Client) PopulateVenues(ctx context.Context, matches []domain.Match) {
+	if len(matches) == 0 {
+		return
+	}
+
+	events := make([]sofascoreEvent, 0, len(matches))
+	indexByEventID := make(map[int][]int, len(matches))
+	for i, match := range matches {
+		if match.EventID == 0 || match.Venue != "" {
+			continue
+		}
+		events = append(events, sofascoreEvent{ID: match.EventID})
+		indexByEventID[match.EventID] = append(indexByEventID[match.EventID], i)
+	}
+	if len(events) == 0 {
+		return
+	}
+
+	c.enrichVenues(ctx, events, len(events))
+	for _, event := range events {
+		if event.Venue == nil || event.Venue.Name == "" {
+			continue
+		}
+		for _, idx := range indexByEventID[event.ID] {
+			matches[idx].Venue = event.Venue.Name
+		}
+	}
+}

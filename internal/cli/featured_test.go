@@ -952,6 +952,52 @@ func TestApp_RunFeatured_WithCountryBroadcast(t *testing.T) {
 	}
 }
 
+func TestApp_RunFeatured_PopulatesVenue(t *testing.T) {
+	var stdout bytes.Buffer
+
+	i18n.SetLanguage("en")
+	today := time.Now().In(time.Local).Format("2006-01-02")
+
+	provider := &mockScheduledProvider{
+		getScheduledEventsFunc: func(ctx context.Context, date string) (iter.Seq[domain.Match], error) {
+			day := mustParseDateLocal(t, date)
+			if date != today {
+				return func(yield func(domain.Match) bool) {}, nil
+			}
+			return func(yield func(domain.Match) bool) {
+				yield(domain.Match{
+					EventID:    70,
+					League:     "UEFA Champions League",
+					StatusDesc: domain.StatusScheduled,
+					HomeTeam:   domain.Team{ID: "1", Name: "Liverpool"},
+					AwayTeam:   domain.Team{ID: "2", Name: "PSG"},
+					Date:       day.Add(20 * time.Hour),
+				})
+			}, nil
+		},
+		populateVenuesFunc: func(ctx context.Context, matches []domain.Match) {
+			for i := range matches {
+				if matches[i].EventID == 70 {
+					matches[i].Venue = "Anfield"
+				}
+			}
+		},
+	}
+
+	app := NewApp(provider, AppOptions{
+		Stdin:  strings.NewReader(""),
+		Stdout: &stdout,
+	})
+
+	if err := app.RunFeatured(context.Background(), "today"); err != nil {
+		t.Fatalf("RunFeatured() error = %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "Anfield") {
+		t.Fatalf("expected venue in featured output, got %q", stdout.String())
+	}
+}
+
 func TestApp_RunFeaturedForTeam_WithCountryBroadcast(t *testing.T) {
 	var stdout bytes.Buffer
 
