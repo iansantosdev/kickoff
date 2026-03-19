@@ -4,146 +4,171 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/iansantosdev/kickoff)](https://goreportcard.com/report/github.com/iansantosdev/kickoff)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 
-**kickoff** is a high-performance, professional CLI tool designed for football enthusiasts who spend their time in the terminal. It provides a seamless way to track live scores, upcoming fixtures, and TV broadcasts without interrupting your workflow.
+**English** | [Português (pt-BR)](README.pt-BR.md)
 
----
+`kickoff` is a Go CLI designed for football enthusiasts who spend their time in the terminal. It provides a seamless way to track live scores, upcoming fixtures, and TV broadcasts without interrupting your workflow.
 
-## Key Features
+## Highlights
 
-### Precision Team Search
-- **Interactive Selection**: When multiple teams match your query, **kickoff** provides an interactive menu for precision selection.
-- **Smart Aliasing**: Supports searching by full name, partial name, or common aliases.
+- Search by team with interactive disambiguation when multiple matches are found.
+- Show upcoming fixtures and recent results.
+- Query multiple teams in a single command.
+- Browse matches by competition or league name.
+- List featured matches for relative periods such as today, tomorrow, and week.
+- Resolve TV channels for a specific country with automatic fallback from system settings.
+- Use the CLI in English or Portuguese (`pt-BR`) with language-specific long flags.
 
-### Comprehensive Match Tracking
-- **Upcoming Fixtures**: Track the next $N$ matches for any team.
-- **Historical Results**: Review previous match scores and performance data.
-- **Rich Context**: Includes stadium names, competition stages (rounds, legs), and aggregated scores for two-legged ties.
+## Requirements
 
-### Broadcast & Localization
-- **Automated TV Listings**: Find out exactly which channels are broadcasting the match in your region.
-- **Smart Country Detection**: Automatically derives your country from system locales or custom environment overrides.
-- **Robust Normalization**: Supports ISO alpha-2, FIFA/IOC codes, and full country names.
+- Go `1.26.1` or newer
+- Internet access to fetch match data
 
-### First-Class Internationalization (i18n)
-- Native support for **English** and **Portuguese (pt-BR)**.
-- Colorized terminal output for maximum readability.
+## Installation
 
----
+### Install with `go install`
 
-## Technical Requirements
-
-- **Go 1.26 or higher**: Leverages the latest Go features, including native range iterators.
-- **Internet Connection**: Required for real-time data fetching from the Sofascore API.
-
----
-
-## Getting Started
-
-### Installation
-
-#### Via Go Install
 ```bash
-go install github.com/iansantosdev/kickoff/cmd/tracker@latest
+go install github.com/iansantosdev/kickoff/cmd/kickoff@latest
 ```
 
-#### Build from Source
+### Build from source
+
 ```bash
 git clone https://github.com/iansantosdev/kickoff.git
 cd kickoff
+go build -o bin/kickoff ./cmd/kickoff
+```
+
+If you use [`just`](https://github.com/casey/just), you can also build a release binary with:
+
+```bash
 just build-release
 ```
-The optimized binary will be generated at `./bin/kickoff`.
 
-### Quick Start
+## Quick start
+
 ```bash
-# 1. See the default upcoming match (Fluminense)
+# Default behavior: show Fluminense's next match
 kickoff
 
-# 2. Search for any team (shows next match)
-kickoff -t "Real Madrid"
+# Search a team and show its next match
+kickoff --team "Real Madrid"
 
-# 3. View the last 5 results for your team
-kickoff -t "Barcelona" -l 5
+# Show the next 3 matches
+kickoff --team "Arsenal" --next 3
 
-# 4. Look ahead: see the next 3 matches
-kickoff -t "Arsenal" -n 3
+# Show the last 5 matches
+kickoff --team "Barcelona" --last 5
 
-# 5. Check TV broadcasts in a specific country (e.g., UK)
-kickoff -t "Manchester City" -c GB
+# Query multiple teams in one execution
+kickoff --team "Flamengo, Palmeiras, Liverpool"
 
-# 6. Change language on the fly
-kickoff -t "Benfica" -g pt-BR
+# Show matches for a competition over the next week
+kickoff --league "UEFA Champions League"
+
+# Show today's featured matches
+kickoff --featured today
+
+# Filter featured matches by league
+kickoff --featured today --league "Premier League"
+
+# Filter featured matches by team
+kickoff --featured week --team "Bayern"
+
+# Resolve TV broadcasts for a specific country
+kickoff --team "Inter Miami" --country US
 ```
 
----
+To see the full help:
 
-## Advanced Configuration
+```bash
+kickoff -h
+```
 
-### Command Line Flags
+## CLI reference
 
-| Flag | Shorthand | Description | Default |
-|:---|:---:|:---|:---|
-| `--team` | `-t` | Team name search query | `"Fluminense"` |
-| `--next` | `-n` | Number of upcoming matches to display | `1` (if `-l` is 0) |
+| Flag | Aliases | Description | Default |
+| --- | --- | --- | --- |
+| `--team` | `-t` | Team name to search for | `Fluminense` |
+| `--next` | `-n` | Number of upcoming matches to display | `1` in team mode when `--last` is not used |
 | `--last` | `-l` | Number of past matches to display | `0` |
-| `--lang` | `-g` | UI Language (`en`, `pt-BR`) | `$KICKOFF_LANG` or System |
-| `--country`| `-c` | Country code for TV (e.g., `BR`, `US`, `GB`) | `$KICKOFF_COUNTRY` or Auto |
-| `--verbose`| `-v` | Enable detailed technical logging | `false` |
+| `--league` | `-L` | Filter by competition or league name | empty |
+| `--featured` | `-f` | Show featured matches for a relative period | empty |
+| `--country` | `-c` | Country code used for TV broadcasts | `KICKOFF_COUNTRY` or auto-detection |
+| `--lang` | `-g` | Interface language (`en`, `pt-BR`) | `KICKOFF_LANG` or system language |
+| `--verbose` | `-v` | Show detailed log messages | `false` |
 
-### Environment Variables
-You can persist your preferences by setting these in your `.bashrc` or `.zshrc`:
+### Accepted values for `--featured`
 
-- `KICKOFF_LANG`: Set your preferred language (e.g., `pt-BR`).
-- `KICKOFF_COUNTRY`: Set your default country for TV broadcasts (e.g., `BR`).
+Supported period values:
 
----
+- `today`, `tomorrow`, `week`, `yesterday`
 
-## Development & Architecture
+`--featured` cannot be combined with `--next` or `--last`.
 
-### Development Prerequisites
-- [`just`](https://github.com/casey/just): task runner used for local development commands.
-- [`golangci-lint`](https://golangci-lint.run/): lint aggregator used in `just lint`.
-- `cc` (C compiler): required only for `just test-race` (`go test -race`).
+## Environment variables
 
-### Just Commands
+You can persist your preferences with:
+
+```bash
+export KICKOFF_LANG=pt-BR
+export KICKOFF_COUNTRY=BR
+```
+
+When `KICKOFF_COUNTRY` is not set, `kickoff` tries to infer the country from the configured language and then from the system `LANG` variable. Country normalization accepts ISO alpha-2 codes, common sports abbreviations, and country names.
+
+## Supported workflows
+
+`kickoff` currently supports four main usage patterns:
+
+1. Team mode: search matches for one or more teams.
+2. League mode: list matches for a competition, with interactive disambiguation when needed.
+3. Featured mode: show matches from curated top-tier competitions for a relative period.
+4. Combined mode: filter featured matches by league and/or team.
+
+## Development
+
+### Project structure
+
+```text
+cmd/kickoff         # CLI entry point
+internal/cli        # execution flows, interaction, and output formatting
+internal/domain     # domain models
+internal/i18n       # translations and country normalization
+internal/sofascore  # HTTP client and API mapping
+```
+
+### Useful commands
+
+If you use `just`, these recipes are available:
+
 | Command | Description |
-|:---|:---|
-| `just` or `just build-release` | Generate an optimized, stripped production binary (default) |
-| `just run -- <args>` | Run the application in development mode |
-| `just build-obfuscated` | Generate a protected binary using [Garble](https://github.com/burrowers/garble) |
-| `just test` | Run the comprehensive test suite |
-| `just test-race` | Run tests with race detector (requires `cc`) |
-| `just vet` | Run `go vet` checks |
-| `just lint` | Run static analysis (golangci-lint) |
+| --- | --- |
+| `just run -- <args>` | Run the CLI in development mode |
+| `just build` | Build `bin/kickoff` |
+| `just build-release` | Run checks and create an optimized build |
+| `just lint` | Run `golangci-lint` |
+| `just test` | Run the test suite |
+| `just test-race` | Run tests with the race detector |
+| `just vet` | Run `go vet` |
+| `just fmt-check` | Check Go formatting |
 | `just check` | Run lint and tests |
-| `just qa` | Run format check + vet + lint + tests |
+| `just qa` | Run formatting checks, vet, lint, and tests |
+| `just build-obfuscated` | Create an obfuscated build with `garble` |
 
-### Internal Structure
-The project follows a clean architecture pattern:
-- **`cmd/tracker`**: Entry point and CLI flag orchestration.
-- **`internal/cli`**: Application logic, formatting, and interactive UI handling.
-- **`internal/sofascore`**: API client for the Sofascore data provider.
-- **`internal/domain`**: Domain models and interfaces.
-- **`internal/i18n`**: Translation dictionaries and country normalization logic.
+Without `just`, you can run:
 
----
-
-## Contributing
-Contributions are welcome and greatly appreciated. To maintain code quality and consistency, please follow these steps:
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/your-feature-name`)
-3. Commit your Changes (`git commit -m 'Add: description of your changes'`)
-4. Push to the Branch (`git push origin feature/your-feature-name`)
-5. Open a Pull Request
-
-## License
-Distributed under the MIT License. See `LICENSE` for more information.
+```bash
+go test ./...
+go vet ./...
+golangci-lint run ./...
+go run ./cmd/kickoff -h
+```
 
 ## Disclaimer
-This project is an independent, open-source tool and is NOT affiliated with, maintained, authorized, endorsed, or sponsored by Sofascore or any of its affiliates. 
 
-It is intended for **personal and educational use only**. Use of this tool to access Sofascore data may be subject to their Terms of Service. The developers of **kickoff** are not responsible for any misuse of this tool or for any potential service interruptions or access restrictions.
+`kickoff` is an independent open-source project and is not affiliated with Sofascore. Access to match data may be subject to the provider's terms, limits, or availability.
 
----
-*Maintained by [iansantosdev](https://github.com/iansantosdev)*
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
