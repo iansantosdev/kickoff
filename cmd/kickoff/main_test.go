@@ -282,7 +282,7 @@ func TestRun_Errors(t *testing.T) {
 		if got != 1 {
 			t.Fatalf("exit = %d, want 1", got)
 		}
-		if !bytes.Contains(stderr.Bytes(), []byte("Erro: boom")) {
+		if !bytes.Contains(stderr.Bytes(), []byte("Error: boom")) {
 			t.Fatalf("expected error in stderr, got %q", stderr.String())
 		}
 	})
@@ -307,8 +307,8 @@ func TestRun_Errors(t *testing.T) {
 
 		var stderr bytes.Buffer
 		got := run([]string{"-h"}, func(string) string { return "" }, &stderr)
-		if got != 1 {
-			t.Fatalf("exit = %d, want 1", got)
+		if got != 0 {
+			t.Fatalf("exit = %d, want 0", got)
 		}
 		if !bytes.Contains(stderr.Bytes(), []byte("Usage: kickoff [options]")) {
 			t.Fatalf("expected usage output, got %q", stderr.String())
@@ -318,8 +318,8 @@ func TestRun_Errors(t *testing.T) {
 	t.Run("help usage in portuguese via -g", func(t *testing.T) {
 		var stderr bytes.Buffer
 		got := run([]string{"-g", "pt-BR", "-h"}, func(string) string { return "" }, &stderr)
-		if got != 1 {
-			t.Fatalf("exit = %d, want 1", got)
+		if got != 0 {
+			t.Fatalf("exit = %d, want 0", got)
 		}
 		if !bytes.Contains(stderr.Bytes(), []byte("Uso: kickoff [options]")) {
 			t.Fatalf("expected pt-BR usage output, got %q", stderr.String())

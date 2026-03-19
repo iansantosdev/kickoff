@@ -91,6 +91,12 @@ func TestNormalizeFeaturedName(t *testing.T) {
 	}
 }
 
+func TestNormalizeLeagueName_AccentInsensitive(t *testing.T) {
+	if got := normalizeLeagueName("Brasileirão   Betano"); got != "brasileirao betano" {
+		t.Fatalf("normalizeLeagueName = %q", got)
+	}
+}
+
 func TestUniqueMatchesByEventID(t *testing.T) {
 	in := []domain.Match{
 		{EventID: 0, Name: "A"},
@@ -163,6 +169,7 @@ func TestPromptLeagueChoice_InvalidOption(t *testing.T) {
 	_, ok, err := promptLeagueChoice(
 		bufio.NewReader(strings.NewReader("99\n")),
 		&out,
+		i18n.New("en"),
 		[]leagueCandidate{{Name: "A"}},
 		"A",
 	)
@@ -176,6 +183,7 @@ func TestPromptLeagueChoice_EmptySelectsFirst(t *testing.T) {
 	got, ok, err := promptLeagueChoice(
 		bufio.NewReader(strings.NewReader("\n")),
 		&out,
+		i18n.New("en"),
 		[]leagueCandidate{{Name: "A"}, {Name: "B"}},
 		"A",
 	)
@@ -192,6 +200,7 @@ type mockScheduledProvider struct {
 	mockMatchProvider
 	getScheduledEventsFunc func(ctx context.Context, date string) (iter.Seq[domain.Match], error)
 	getBroadcastsFunc      func(ctx context.Context, eventID int, countryCode string) []string
+	populateVenuesFunc     func(ctx context.Context, matches []domain.Match)
 }
 
 func (m *mockScheduledProvider) GetScheduledEvents(ctx context.Context, date string) (iter.Seq[domain.Match], error) {
@@ -206,6 +215,12 @@ func (m *mockScheduledProvider) GetBroadcasts(ctx context.Context, eventID int, 
 		return m.getBroadcastsFunc(ctx, eventID, countryCode)
 	}
 	return nil
+}
+
+func (m *mockScheduledProvider) PopulateVenues(ctx context.Context, matches []domain.Match) {
+	if m.populateVenuesFunc != nil {
+		m.populateVenuesFunc(ctx, matches)
+	}
 }
 
 func mustParseDateLocal(t *testing.T, dateYYYYMMDD string) time.Time {
@@ -465,6 +480,45 @@ func TestApp_RunLeagueForPeriod_TodayOnly(t *testing.T) {
 	}
 	if strings.Contains(out, "Palmeiras") {
 		t.Errorf("did not expect tomorrow's match in output, got: %q", out)
+	}
+}
+
+func TestApp_RunLeague_AccentInsensitiveQuery(t *testing.T) {
+	var stdout bytes.Buffer
+
+	i18n.SetLanguage("en")
+	today := time.Now().In(time.Local).Format("2006-01-02")
+
+	provider := &mockScheduledProvider{
+		getScheduledEventsFunc: func(ctx context.Context, date string) (iter.Seq[domain.Match], error) {
+			day := mustParseDateLocal(t, date)
+			if date != today {
+				return func(yield func(domain.Match) bool) {}, nil
+			}
+			return func(yield func(domain.Match) bool) {
+				yield(domain.Match{
+					EventID:    50,
+					League:     "Brasileirão Betano",
+					StatusDesc: domain.StatusScheduled,
+					HomeTeam:   domain.Team{ID: "1", Name: "Fluminense"},
+					AwayTeam:   domain.Team{ID: "2", Name: "Palmeiras"},
+					Date:       day.Add(20 * time.Hour),
+				})
+			}, nil
+		},
+	}
+
+	app := NewApp(provider, AppOptions{
+		Stdin:  strings.NewReader(""),
+		Stdout: &stdout,
+	})
+
+	if err := app.RunLeagueForPeriod(context.Background(), "Brasileirao", "today"); err != nil {
+		t.Fatalf("RunLeagueForPeriod() error = %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "Brasileirão Betano") {
+		t.Fatalf("expected accent-insensitive league match, got %q", stdout.String())
 	}
 }
 
@@ -981,7 +1035,7 @@ func TestCollectScheduledByDates_FetchError(t *testing.T) {
 			return nil, fmt.Errorf("boom")
 		},
 	}
-	_, err := collectScheduledByDates(context.Background(), provider, []string{"2026-03-18"})
+	_, err := collectScheduledByDates(context.Background(), provider, []string{"2026-03-18"}, i18n.New("en"))
 	if err == nil {
 		t.Fatal("expected fetch error")
 	}
@@ -1460,8 +1514,84 @@ func TestRunFeaturedForTeam_ProviderAndFetchAndMultiOutput(t *testing.T) {
 }
 
 func TestPromptLeagueChoice_ReadError(t *testing.T) {
-	_, ok, err := promptLeagueChoice(bufio.NewReader(errReader{}), io.Discard, []leagueCandidate{{Name: "A"}}, "A")
+	_, ok, err := promptLeagueChoice(bufio.NewReader(errReader{}), io.Discard, i18n.New("en"), []leagueCandidate{{Name: "A"}}, "A")
 	if err == nil || ok {
 		t.Fatalf("expected read error, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestCollectScheduledByDates_EmptyDates(t *testing.T) {
+	matches, err := collectScheduledByDates(context.Background(), &mockScheduledProvider{}, nil, i18n.New("en"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if matches != nil {
+		t.Fatalf("expected nil matches for empty dates, got %#v", matches)
+	}
+}
+
+func TestCollectScheduledByDates_ContextAlreadyCanceled(t *testing.T) {
+	calls := 0
+	provider := &mockScheduledProvider{
+		getScheduledEventsFunc: func(ctx context.Context, date string) (iter.Seq[domain.Match], error) {
+			calls++
+			return func(yield func(domain.Match) bool) {}, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	matches, err := collectScheduledByDates(ctx, provider, []string{"2026-03-18"}, i18n.New("en"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("expected no scheduled fetches after cancellation, got %d", calls)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no matches, got %#v", matches)
+	}
+}
+
+func TestCollectScheduledByDates_CancelWhileSemaphoreFull(t *testing.T) {
+	started := make(chan string, 4)
+	provider := &mockScheduledProvider{
+		getScheduledEventsFunc: func(ctx context.Context, date string) (iter.Seq[domain.Match], error) {
+			started <- date
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := collectScheduledByDates(
+			ctx,
+			provider,
+			[]string{"2026-03-18", "2026-03-19", "2026-03-20", "2026-03-21", "2026-03-22"},
+			i18n.New("en"),
+		)
+		done <- err
+	}()
+
+	for range 4 {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for scheduled fetch workers to start")
+		}
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected cancellation-related fetch error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("collectScheduledByDates did not return after cancellation")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"iter"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iansantosdev/kickoff/internal/domain"
 )
@@ -21,6 +22,25 @@ type mockMatchProvider struct {
 type errReader struct{}
 
 func (errReader) Read(p []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+type mockAppDataProvider struct {
+	mockMatchProvider
+	getBroadcastsFunc  func(ctx context.Context, eventID int, countryCode string) []string
+	populateVenuesFunc func(ctx context.Context, matches []domain.Match)
+}
+
+func (m *mockAppDataProvider) GetBroadcasts(ctx context.Context, eventID int, countryCode string) []string {
+	if m.getBroadcastsFunc != nil {
+		return m.getBroadcastsFunc(ctx, eventID, countryCode)
+	}
+	return nil
+}
+
+func (m *mockAppDataProvider) PopulateVenues(ctx context.Context, matches []domain.Match) {
+	if m.populateVenuesFunc != nil {
+		m.populateVenuesFunc(ctx, matches)
+	}
+}
 
 func TestNewApp_DefaultIO(t *testing.T) {
 	p := &mockMatchProvider{}
@@ -77,7 +97,7 @@ func TestApp_Run(t *testing.T) {
 					},
 				}
 			},
-			wantOutput: "Time Unknow\n", // Assuming locale issues or missing translation in I18N for tests, let's keep it simple
+			wantOutput: "Could not find team",
 			wantErr:    false,
 		},
 		{
@@ -129,11 +149,8 @@ func TestApp_Run(t *testing.T) {
 
 			if !tt.wantErr && tt.wantOutput != "" {
 				got := stdout.String()
-				// Doing basic substring match since formatting is complex
 				if !strings.Contains(got, tt.wantOutput) {
-					// We might get translations like "Time 'UnknownTeamxyz' não encontrado"
-					// Using a very loose match for now because I18n is not stubbed yet.
-					t.Logf("stdout = %q, wantOutput content %q", got, tt.wantOutput)
+					t.Fatalf("stdout = %q, want output containing %q", got, tt.wantOutput)
 				}
 			}
 		})
@@ -244,8 +261,8 @@ func TestApp_RunMultiple_ContinuesOnError(t *testing.T) {
 	})
 
 	err := app.RunMultiple(context.Background(), []string{"A", "B"})
-	if err != nil {
-		t.Fatalf("RunMultiple should not return error, got %v", err)
+	if err == nil {
+		t.Fatal("RunMultiple should return error when at least one query fails")
 	}
 	out := stdout.String()
 	if !strings.Contains(out, "⚠️") {
@@ -379,6 +396,40 @@ func TestApp_Run_SelectionBranchesAndCards(t *testing.T) {
 			t.Fatalf("expected both matches in output, got %q", out)
 		}
 	})
+
+	t.Run("multiple exact candidates require disambiguation", func(t *testing.T) {
+		var stdout bytes.Buffer
+		provider := &mockMatchProvider{
+			SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+				return func(yield func(domain.Team) bool) {
+					if !yield(domain.Team{ID: "1", Name: "Alpha", Subtitle: "Brazil"}) {
+						return
+					}
+					yield(domain.Team{ID: "2", Name: "Alpha", Subtitle: "Argentina"})
+				}, nil
+			},
+			getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+				if teamID != "2" {
+					t.Fatalf("expected second exact team to be selected, got %s", teamID)
+				}
+				return func(yield func(domain.Match) bool) {
+					yield(domain.Match{
+						League:     "League Exact",
+						StatusDesc: domain.StatusScheduled,
+						HomeTeam:   domain.Team{ID: "1", Name: "A"},
+						AwayTeam:   domain.Team{ID: "2", Name: "B"},
+					})
+				}, nil
+			},
+		}
+		app := NewApp(provider, AppOptions{Stdout: &stdout, Stdin: strings.NewReader("2\n")})
+		if err := app.Run(context.Background(), "Alpha"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(stdout.String(), "League Exact") {
+			t.Fatalf("expected selected exact-match output, got %q", stdout.String())
+		}
+	})
 }
 
 func TestApp_Run_GetMatchesError(t *testing.T) {
@@ -398,5 +449,89 @@ func TestApp_Run_GetMatchesError(t *testing.T) {
 	err := app.Run(context.Background(), "Fluminense")
 	if err == nil || !strings.Contains(err.Error(), "boom matches") {
 		t.Fatalf("expected wrapped get matches error, got %v", err)
+	}
+}
+
+func TestApp_enrichBroadcasts_ContextAlreadyCanceled(t *testing.T) {
+	calls := 0
+	provider := &mockAppDataProvider{
+		getBroadcastsFunc: func(ctx context.Context, eventID int, countryCode string) []string {
+			calls++
+			return []string{"Globo"}
+		},
+	}
+	app := NewApp(provider, AppOptions{CountryCode: "BR"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	app.enrichBroadcasts(ctx, []domain.Match{{EventID: 1}})
+
+	if calls != 0 {
+		t.Fatalf("expected no broadcast calls after cancellation, got %d", calls)
+	}
+}
+
+func TestApp_enrichBroadcasts_CancelWhileSemaphoreFull(t *testing.T) {
+	started := make(chan int, 5)
+	provider := &mockAppDataProvider{
+		getBroadcastsFunc: func(ctx context.Context, eventID int, countryCode string) []string {
+			started <- eventID
+			<-ctx.Done()
+			return nil
+		},
+	}
+	app := NewApp(provider, AppOptions{CountryCode: "BR"})
+
+	matches := make([]domain.Match, 6)
+	for i := range matches {
+		matches[i].EventID = i + 1
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		app.enrichBroadcasts(ctx, matches)
+		close(done)
+	}()
+
+	for range 5 {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for broadcast workers to start")
+		}
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("enrichBroadcasts did not return after cancellation")
+	}
+}
+
+func TestApp_Run_ExactMatchPromptError(t *testing.T) {
+	var stdout bytes.Buffer
+	provider := &mockMatchProvider{
+		SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+			return func(yield func(domain.Team) bool) {
+				if !yield(domain.Team{ID: "1", Name: "Alpha", Subtitle: "Brazil"}) {
+					return
+				}
+				yield(domain.Team{ID: "2", Name: "Alpha", Subtitle: "Argentina"})
+			}, nil
+		},
+	}
+
+	app := NewApp(provider, AppOptions{
+		Stdin:  strings.NewReader("99\n"),
+		Stdout: &stdout,
+	})
+
+	err := app.Run(context.Background(), "Alpha")
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "invalid option") {
+		t.Fatalf("expected invalid option error for exact-match prompt, got %v", err)
 	}
 }

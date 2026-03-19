@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -82,60 +83,63 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 			defaultLang = "en"
 		}
 	}
-	i18n.SetLanguage(detectLangFromArgs(args, defaultLang))
+	tr := i18n.New(detectLangFromArgs(args, defaultLang))
 
 	fs := flag.NewFlagSet("kickoff", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.StringVar(&teamName, "team", "Fluminense", i18n.Get("flag_team_desc"))
-	fs.StringVar(&teamName, "t", "Fluminense", i18n.Get("flag_team_short_desc"))
-	fs.StringVar(&teamName, "time", "Fluminense", i18n.Get("flag_team_short_desc"))
-	fs.StringVar(&lang, "lang", defaultLang, i18n.Get("flag_lang_desc"))
-	fs.StringVar(&lang, "g", defaultLang, i18n.Get("flag_lang_short_desc"))
-	fs.StringVar(&lang, "idioma", defaultLang, i18n.Get("flag_lang_short_desc"))
-	fs.StringVar(&country, "country", getenv("KICKOFF_COUNTRY"), i18n.Get("flag_country_desc"))
-	fs.StringVar(&country, "c", getenv("KICKOFF_COUNTRY"), i18n.Get("flag_country_short_desc"))
-	fs.StringVar(&country, "pais", getenv("KICKOFF_COUNTRY"), i18n.Get("flag_country_short_desc"))
-	fs.IntVar(&nextMatches, "next", 0, i18n.Get("flag_next_desc"))
-	fs.IntVar(&nextMatches, "n", 0, i18n.Get("flag_next_short_desc"))
-	fs.IntVar(&nextMatches, "proximos", 0, i18n.Get("flag_next_short_desc"))
-	fs.IntVar(&lastMatches, "last", 0, i18n.Get("flag_last_desc"))
-	fs.IntVar(&lastMatches, "l", 0, i18n.Get("flag_last_short_desc"))
-	fs.IntVar(&lastMatches, "ultimos", 0, i18n.Get("flag_last_short_desc"))
-	fs.BoolVar(&verbose, "verbose", false, i18n.Get("flag_verbose_desc"))
-	fs.BoolVar(&verbose, "v", false, i18n.Get("flag_verbose_short_desc"))
-	fs.BoolVar(&verbose, "detalhado", false, i18n.Get("flag_verbose_short_desc"))
-	fs.StringVar(&leagueName, "league", "", i18n.Get("flag_league_desc"))
-	fs.StringVar(&leagueName, "L", "", i18n.Get("flag_league_short_desc"))
-	fs.StringVar(&leagueName, "liga", "", i18n.Get("flag_league_short_desc"))
-	fs.StringVar(&featured, "featured", "", i18n.Get("flag_featured_desc"))
-	fs.StringVar(&featured, "f", "", i18n.Get("flag_featured_short_desc"))
-	fs.StringVar(&featured, "destaques", "", i18n.Get("flag_featured_short_desc"))
+	fs.StringVar(&teamName, "team", "Fluminense", tr.Get("flag_team_desc"))
+	fs.StringVar(&teamName, "t", "Fluminense", tr.Get("flag_team_short_desc"))
+	fs.StringVar(&teamName, "time", "Fluminense", tr.Get("flag_team_short_desc"))
+	fs.StringVar(&lang, "lang", defaultLang, tr.Get("flag_lang_desc"))
+	fs.StringVar(&lang, "g", defaultLang, tr.Get("flag_lang_short_desc"))
+	fs.StringVar(&lang, "idioma", defaultLang, tr.Get("flag_lang_short_desc"))
+	fs.StringVar(&country, "country", getenv("KICKOFF_COUNTRY"), tr.Get("flag_country_desc"))
+	fs.StringVar(&country, "c", getenv("KICKOFF_COUNTRY"), tr.Get("flag_country_short_desc"))
+	fs.StringVar(&country, "pais", getenv("KICKOFF_COUNTRY"), tr.Get("flag_country_short_desc"))
+	fs.IntVar(&nextMatches, "next", 0, tr.Get("flag_next_desc"))
+	fs.IntVar(&nextMatches, "n", 0, tr.Get("flag_next_short_desc"))
+	fs.IntVar(&nextMatches, "proximos", 0, tr.Get("flag_next_short_desc"))
+	fs.IntVar(&lastMatches, "last", 0, tr.Get("flag_last_desc"))
+	fs.IntVar(&lastMatches, "l", 0, tr.Get("flag_last_short_desc"))
+	fs.IntVar(&lastMatches, "ultimos", 0, tr.Get("flag_last_short_desc"))
+	fs.BoolVar(&verbose, "verbose", false, tr.Get("flag_verbose_desc"))
+	fs.BoolVar(&verbose, "v", false, tr.Get("flag_verbose_short_desc"))
+	fs.BoolVar(&verbose, "detalhado", false, tr.Get("flag_verbose_short_desc"))
+	fs.StringVar(&leagueName, "league", "", tr.Get("flag_league_desc"))
+	fs.StringVar(&leagueName, "L", "", tr.Get("flag_league_short_desc"))
+	fs.StringVar(&leagueName, "liga", "", tr.Get("flag_league_short_desc"))
+	fs.StringVar(&featured, "featured", "", tr.Get("flag_featured_desc"))
+	fs.StringVar(&featured, "f", "", tr.Get("flag_featured_short_desc"))
+	fs.StringVar(&featured, "destaques", "", tr.Get("flag_featured_short_desc"))
 
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "%s: %s [options]\n\n%s:\n", i18n.Get("usage"), "kickoff", i18n.Get("options"))
-		if i18n.CurrentLanguage() == "pt-BR" {
-			fmt.Fprintf(stderr, "  -c, --pais string      %s\n", i18n.Get("flag_country_desc"))
-			fmt.Fprintf(stderr, "  -f, --destaques string %s\n", i18n.Get("flag_featured_desc_help"))
-			fmt.Fprintf(stderr, "  -g, --idioma string    %s (%s %q)\n", i18n.Get("flag_lang_desc"), i18n.Get("default"), defaultLang)
-			fmt.Fprintf(stderr, "  -l, --ultimos int      %s\n", i18n.Get("flag_last_desc_help"))
-			fmt.Fprintf(stderr, "  -L, --liga string      %s\n", i18n.Get("flag_league_desc"))
-			fmt.Fprintf(stderr, "  -n, --proximos int     %s\n", i18n.Get("flag_next_desc_help"))
-			fmt.Fprintf(stderr, "  -t, --time string      %s (%s \"Fluminense\")\n", i18n.Get("flag_team_desc"), i18n.Get("default"))
-			fmt.Fprintf(stderr, "                         %s\n", i18n.Get("flag_team_list_desc"))
-			fmt.Fprintf(stderr, "  -v, --detalhado        %s\n", i18n.Get("flag_verbose_desc"))
+		fmt.Fprintf(stderr, "%s: %s [options]\n\n%s:\n", tr.Get("usage"), "kickoff", tr.Get("options"))
+		if tr.Language() == "pt-BR" {
+			fmt.Fprintf(stderr, "  -c, --pais string      %s\n", tr.Get("flag_country_desc"))
+			fmt.Fprintf(stderr, "  -f, --destaques string %s\n", tr.Get("flag_featured_desc_help"))
+			fmt.Fprintf(stderr, "  -g, --idioma string    %s (%s %q)\n", tr.Get("flag_lang_desc"), tr.Get("default"), defaultLang)
+			fmt.Fprintf(stderr, "  -l, --ultimos int      %s\n", tr.Get("flag_last_desc_help"))
+			fmt.Fprintf(stderr, "  -L, --liga string      %s\n", tr.Get("flag_league_desc"))
+			fmt.Fprintf(stderr, "  -n, --proximos int     %s\n", tr.Get("flag_next_desc_help"))
+			fmt.Fprintf(stderr, "  -t, --time string      %s (%s \"Fluminense\")\n", tr.Get("flag_team_desc"), tr.Get("default"))
+			fmt.Fprintf(stderr, "                         %s\n", tr.Get("flag_team_list_desc"))
+			fmt.Fprintf(stderr, "  -v, --detalhado        %s\n", tr.Get("flag_verbose_desc"))
 			return
 		}
-		fmt.Fprintf(stderr, "  -c, --country string   %s\n", i18n.Get("flag_country_desc"))
-		fmt.Fprintf(stderr, "  -f, --featured string  %s\n", i18n.Get("flag_featured_desc_help"))
-		fmt.Fprintf(stderr, "  -g, --lang string      %s (%s %q)\n", i18n.Get("flag_lang_desc"), i18n.Get("default"), defaultLang)
-		fmt.Fprintf(stderr, "  -l, --last int         %s\n", i18n.Get("flag_last_desc_help"))
-		fmt.Fprintf(stderr, "  -L, --league string    %s\n", i18n.Get("flag_league_desc"))
-		fmt.Fprintf(stderr, "  -n, --next int         %s\n", i18n.Get("flag_next_desc_help"))
-		fmt.Fprintf(stderr, "  -t, --team string      %s (%s \"Fluminense\")\n", i18n.Get("flag_team_desc"), i18n.Get("default"))
-		fmt.Fprintf(stderr, "                         %s\n", i18n.Get("flag_team_list_desc"))
-		fmt.Fprintf(stderr, "  -v, --verbose          %s\n", i18n.Get("flag_verbose_desc"))
+		fmt.Fprintf(stderr, "  -c, --country string   %s\n", tr.Get("flag_country_desc"))
+		fmt.Fprintf(stderr, "  -f, --featured string  %s\n", tr.Get("flag_featured_desc_help"))
+		fmt.Fprintf(stderr, "  -g, --lang string      %s (%s %q)\n", tr.Get("flag_lang_desc"), tr.Get("default"), defaultLang)
+		fmt.Fprintf(stderr, "  -l, --last int         %s\n", tr.Get("flag_last_desc_help"))
+		fmt.Fprintf(stderr, "  -L, --league string    %s\n", tr.Get("flag_league_desc"))
+		fmt.Fprintf(stderr, "  -n, --next int         %s\n", tr.Get("flag_next_desc_help"))
+		fmt.Fprintf(stderr, "  -t, --team string      %s (%s \"Fluminense\")\n", tr.Get("flag_team_desc"), tr.Get("default"))
+		fmt.Fprintf(stderr, "                         %s\n", tr.Get("flag_team_list_desc"))
+		fmt.Fprintf(stderr, "  -v, --verbose          %s\n", tr.Get("flag_verbose_desc"))
 	}
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 1
 	}
 
@@ -166,10 +170,10 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		Level: logLevel,
 	})))
 
-	i18n.SetLanguage(lang)
+	tr = i18n.New(lang)
 
 	if featured != "" && limitFlagSet {
-		fmt.Fprintln(stderr, i18n.Get("err_featured_with_limits"))
+		fmt.Fprintln(stderr, tr.Get("err_featured_with_limits"))
 		return 1
 	}
 
@@ -196,6 +200,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 		CountryCode: country,
 		NextMatches: nextMatches,
 		LastMatches: lastMatches,
+		Translator:  tr,
 	})
 
 	var err error
@@ -223,7 +228,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 
 	if err != nil {
 		cancel()
-		fmt.Fprintf(stderr, "Erro: %v\n", err)
+		fmt.Fprintf(stderr, "%s: %v\n", tr.Get("error_prefix"), err)
 		return 1
 	}
 	cancel()

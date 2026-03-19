@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
-	"unicode"
 
 	"github.com/iansantosdev/kickoff/internal/domain"
 	"github.com/iansantosdev/kickoff/internal/i18n"
@@ -76,41 +76,17 @@ func IsFeatured(leagueName string) bool {
 }
 
 func normalizeFeaturedName(input string) string {
-	s := strings.ToLower(strings.TrimSpace(input))
-
-	replacer := strings.NewReplacer(
-		"á", "a", "à", "a", "â", "a", "ã", "a", "ä", "a",
-		"é", "e", "è", "e", "ê", "e", "ë", "e",
-		"í", "i", "ì", "i", "î", "i", "ï", "i",
-		"ó", "o", "ò", "o", "ô", "o", "õ", "o", "ö", "o",
-		"ú", "u", "ù", "u", "û", "u", "ü", "u",
-		"ç", "c", "ñ", "n",
-	)
-	s = replacer.Replace(s)
-
-	var b strings.Builder
-	b.Grow(len(s))
-	lastSpace := true
-
-	for _, r := range s {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-			lastSpace = false
-			continue
-		}
-		if !lastSpace {
-			b.WriteByte(' ')
-			lastSpace = true
-		}
-	}
-
-	return strings.TrimSpace(b.String())
+	return normalizeSearchText(input)
 }
 
 // ResolvePeriod converts a relative period name (today/tomorrow/week)
 // into a list of date strings (YYYY-MM-DD format).
 // Accepts both English and Portuguese period names.
 func ResolvePeriod(period string) ([]string, error) {
+	return resolvePeriodWithBundle(period, i18n.Default())
+}
+
+func resolvePeriodWithBundle(period string, tr i18n.Bundle) ([]string, error) {
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 
@@ -129,7 +105,7 @@ func ResolvePeriod(period string) ([]string, error) {
 		}
 		return dates, nil
 	default:
-		return nil, fmt.Errorf("%s: %q", i18n.Get("err_invalid_period"), period)
+		return nil, fmt.Errorf("%s: %q", tr.Get("err_invalid_period"), period)
 	}
 }
 
@@ -184,7 +160,7 @@ func parseTeamQueries(raw string) []string {
 }
 
 func matchHasTeamQuery(m domain.Match, query string) bool {
-	lq := strings.ToLower(strings.TrimSpace(query))
+	lq := normalizeSearchText(query)
 	if lq == "" {
 		return false
 	}
@@ -195,7 +171,7 @@ func matchHasTeamQuery(m domain.Match, query string) bool {
 		m.Name,
 	}
 	for _, candidate := range candidates {
-		if strings.Contains(strings.ToLower(candidate), lq) {
+		if strings.Contains(normalizeSearchText(candidate), lq) {
 			return true
 		}
 	}
@@ -217,25 +193,70 @@ func filterMatchesByTeam(matches []domain.Match, teamQuery string) []domain.Matc
 	return filtered
 }
 
-func collectScheduledByDates(ctx context.Context, sp ScheduledEventsProvider, dates []string) ([]domain.Match, error) {
+func collectScheduledByDates(ctx context.Context, sp ScheduledEventsProvider, dates []string, tr i18n.Bundle) ([]domain.Match, error) {
+	if len(dates) == 0 {
+		return nil, nil
+	}
+
 	all := make([]domain.Match, 0, 128)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, min(len(dates), 4))
+	errCh := make(chan error, 1)
+	ctxFetch, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	for _, date := range dates {
-		ctxScheduled, cancel := context.WithTimeout(ctx, 15*time.Second)
-		events, fetchErr := sp.GetScheduledEvents(ctxScheduled, date)
-		cancel()
-
-		if fetchErr != nil {
-			return nil, fmt.Errorf("%s: %w", i18n.Get("err_fetch_scheduled"), fetchErr)
+		if ctxFetch.Err() != nil {
+			break
+		}
+		date := date
+		wg.Add(1)
+		select {
+		case sem <- struct{}{}:
+		case <-ctxFetch.Done():
+			wg.Done()
+			continue
 		}
 
-		for m := range events {
-			// Sofascore's scheduled-events can include near-boundary matches
-			// (timezone/rounding). Enforce the requested local day.
-			if isMatchOnDateLocal(m, date) {
-				all = append(all, m)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			ctxScheduled, cancelScheduled := context.WithTimeout(ctxFetch, 15*time.Second)
+			events, fetchErr := sp.GetScheduledEvents(ctxScheduled, date)
+			cancelScheduled()
+			if fetchErr != nil {
+				wrapped := fmt.Errorf("%s: %w", tr.Get("err_fetch_scheduled"), fetchErr)
+				select {
+				case errCh <- wrapped:
+					cancel()
+				default:
+				}
+				return
 			}
-		}
+
+			matchesForDate := make([]domain.Match, 0, 16)
+			for m := range events {
+				// Sofascore's scheduled-events can include near-boundary matches
+				// (timezone/rounding). Enforce the requested local day.
+				if isMatchOnDateLocal(m, date) {
+					matchesForDate = append(matchesForDate, m)
+				}
+			}
+
+			mu.Lock()
+			all = append(all, matchesForDate...)
+			mu.Unlock()
+		}()
+	}
+
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		return nil, err
+	default:
 	}
 
 	all = uniqueMatchesByEventID(all)
@@ -244,7 +265,7 @@ func collectScheduledByDates(ctx context.Context, sp ScheduledEventsProvider, da
 }
 
 func normalizeLeagueName(s string) string {
-	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+	return normalizeSearchText(s)
 }
 
 type leagueCandidate struct {
@@ -299,7 +320,7 @@ func candidatesFromMatches(matches []domain.Match) []leagueCandidate {
 	return out
 }
 
-func selectLeagueFromMatches(stdin *bufio.Reader, stdout io.Writer, matches []domain.Match, query string) (leagueCandidate, bool, error) {
+func selectLeagueFromMatches(stdin *bufio.Reader, stdout io.Writer, tr i18n.Bundle, matches []domain.Match, query string) (leagueCandidate, bool, error) {
 	allCandidates := candidatesFromMatches(matches)
 	nq := normalizeLeagueName(query)
 
@@ -315,14 +336,14 @@ func selectLeagueFromMatches(stdin *bufio.Reader, stdout io.Writer, matches []do
 		return exact[0], true, nil
 	}
 	if len(exact) > 1 {
-		return promptLeagueChoice(stdin, stdout, exact, query)
+		return promptLeagueChoice(stdin, stdout, tr, exact, query)
 	}
 
 	// 2) Fallback: substring match.
-	lq := strings.ToLower(query)
+	lq := normalizeLeagueName(query)
 	var candidates []leagueCandidate
 	for _, c := range allCandidates {
-		if strings.Contains(strings.ToLower(c.Name), lq) {
+		if strings.Contains(normalizeLeagueName(c.Name), lq) {
 			candidates = append(candidates, c)
 		}
 	}
@@ -332,7 +353,7 @@ func selectLeagueFromMatches(stdin *bufio.Reader, stdout io.Writer, matches []do
 	if len(candidates) == 1 {
 		return candidates[0], true, nil
 	}
-	return promptLeagueChoice(stdin, stdout, candidates, query)
+	return promptLeagueChoice(stdin, stdout, tr, candidates, query)
 }
 
 func filterBySelectedLeague(matches []domain.Match, selectedLeague leagueCandidate) []domain.Match {
@@ -352,7 +373,7 @@ func filterBySelectedLeague(matches []domain.Match, selectedLeague leagueCandida
 	return filtered
 }
 
-func promptLeagueChoice(stdin *bufio.Reader, stdout io.Writer, candidates []leagueCandidate, query string) (leagueCandidate, bool, error) {
+func promptLeagueChoice(stdin *bufio.Reader, stdout io.Writer, tr i18n.Bundle, candidates []leagueCandidate, query string) (leagueCandidate, bool, error) {
 	// If there are duplicate names, disambiguate labels.
 	nameCount := make(map[string]int, len(candidates))
 	for _, c := range candidates {
@@ -366,11 +387,11 @@ func promptLeagueChoice(stdin *bufio.Reader, stdout io.Writer, candidates []leag
 		}
 	}
 
-	fmt.Fprintf(stdout, "%s '%s'. %s:\n", i18n.Get("multiple_leagues_found"), query, i18n.Get("choose_correct_option"))
+	fmt.Fprintf(stdout, "%s '%s'. %s:\n", tr.Get("multiple_leagues_found"), query, tr.Get("choose_correct_option"))
 	for i, c := range candidates {
 		fmt.Fprintf(stdout, "%d - %s\n", i+1, c.displayName(disambiguate))
 	}
-	fmt.Fprintf(stdout, "\n%s: ", i18n.Get("prompt_league_choice"))
+	fmt.Fprintf(stdout, "\n%s: ", tr.Get("prompt_league_choice"))
 
 	input, err := stdin.ReadString('\n')
 	if err != nil {
@@ -382,7 +403,7 @@ func promptLeagueChoice(stdin *bufio.Reader, stdout io.Writer, candidates []leag
 	}
 	choice, err := strconv.Atoi(input)
 	if err != nil || choice < 1 || choice > len(candidates) {
-		return leagueCandidate{}, false, fmt.Errorf("%s", i18n.Get("invalid_option"))
+		return leagueCandidate{}, false, fmt.Errorf("%s", tr.Get("invalid_option"))
 	}
 	return candidates[choice-1], true, nil
 }
@@ -396,28 +417,29 @@ func (a *App) RunLeague(ctx context.Context, leagueName string) error {
 // RunLeagueForPeriod fetches scheduled events for the given period
 // and filters them by league/competition name.
 func (a *App) RunLeagueForPeriod(ctx context.Context, leagueName, period string) error {
+	tr := a.opts.Translator
 	sp, ok := a.provider.(ScheduledEventsProvider)
 	if !ok {
 		return fmt.Errorf("provider does not support scheduled events")
 	}
 
-	dates, err := ResolvePeriod(period)
+	dates, err := resolvePeriodWithBundle(period, tr)
 	if err != nil {
 		return err
 	}
 
-	all, err := collectScheduledByDates(ctx, sp, dates)
+	all, err := collectScheduledByDates(ctx, sp, dates, tr)
 	if err != nil {
 		return err
 	}
 
 	stdin := bufio.NewReader(a.opts.Stdin)
-	selectedLeague, ok, err := selectLeagueFromMatches(stdin, a.opts.Stdout, all, leagueName)
+	selectedLeague, ok, err := selectLeagueFromMatches(stdin, a.opts.Stdout, tr, all, leagueName)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", i18n.Get("no_league_matches"), leagueName)
+		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", tr.Get("no_league_matches"), leagueName)
 		return nil
 	}
 
@@ -431,7 +453,7 @@ func (a *App) RunLeagueForPeriod(ctx context.Context, leagueName, period string)
 		if i > 0 {
 			fmt.Fprintln(a.opts.Stdout)
 		}
-		fmt.Fprint(a.opts.Stdout, FormatMatch(m))
+		fmt.Fprint(a.opts.Stdout, FormatMatchWithBundle(m, tr))
 	}
 
 	return nil
@@ -440,28 +462,29 @@ func (a *App) RunLeagueForPeriod(ctx context.Context, leagueName, period string)
 // RunLeagueForPeriodForTeam fetches scheduled events for the given period,
 // filters by league, and then narrows results by team query.
 func (a *App) RunLeagueForPeriodForTeam(ctx context.Context, leagueName, period, teamQuery string) error {
+	tr := a.opts.Translator
 	sp, ok := a.provider.(ScheduledEventsProvider)
 	if !ok {
 		return fmt.Errorf("provider does not support scheduled events")
 	}
 
-	dates, err := ResolvePeriod(period)
+	dates, err := resolvePeriodWithBundle(period, tr)
 	if err != nil {
 		return err
 	}
 
-	all, err := collectScheduledByDates(ctx, sp, dates)
+	all, err := collectScheduledByDates(ctx, sp, dates, tr)
 	if err != nil {
 		return err
 	}
 
 	stdin := bufio.NewReader(a.opts.Stdin)
-	selectedLeague, ok, err := selectLeagueFromMatches(stdin, a.opts.Stdout, all, leagueName)
+	selectedLeague, ok, err := selectLeagueFromMatches(stdin, a.opts.Stdout, tr, all, leagueName)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", i18n.Get("no_league_matches"), leagueName)
+		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", tr.Get("no_league_matches"), leagueName)
 		return nil
 	}
 
@@ -469,7 +492,7 @@ func (a *App) RunLeagueForPeriodForTeam(ctx context.Context, leagueName, period,
 	teamFiltered := filterMatchesByTeam(leagueFiltered, teamQuery)
 	teamFiltered = a.applyMatchLimit(teamFiltered)
 	if len(teamFiltered) == 0 {
-		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", i18n.Get("no_match_found"), teamQuery)
+		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", tr.Get("no_match_found"), teamQuery)
 		return nil
 	}
 
@@ -482,7 +505,7 @@ func (a *App) RunLeagueForPeriodForTeam(ctx context.Context, leagueName, period,
 		if i > 0 {
 			fmt.Fprintln(a.opts.Stdout)
 		}
-		fmt.Fprint(a.opts.Stdout, FormatMatch(m))
+		fmt.Fprint(a.opts.Stdout, FormatMatchWithBundle(m, tr))
 	}
 	return nil
 }
@@ -490,17 +513,18 @@ func (a *App) RunLeagueForPeriodForTeam(ctx context.Context, leagueName, period,
 // RunFeatured fetches scheduled events for the given period and shows
 // only matches from top-tier featured leagues.
 func (a *App) RunFeatured(ctx context.Context, period string) error {
+	tr := a.opts.Translator
 	sp, ok := a.provider.(ScheduledEventsProvider)
 	if !ok {
 		return fmt.Errorf("provider does not support scheduled events")
 	}
 
-	dates, err := ResolvePeriod(period)
+	dates, err := resolvePeriodWithBundle(period, tr)
 	if err != nil {
 		return err
 	}
 
-	all, err := collectScheduledByDates(ctx, sp, dates)
+	all, err := collectScheduledByDates(ctx, sp, dates, tr)
 	if err != nil {
 		return err
 	}
@@ -514,7 +538,7 @@ func (a *App) RunFeatured(ctx context.Context, period string) error {
 	allFeatured = a.applyMatchLimit(allFeatured)
 
 	if len(allFeatured) == 0 {
-		fmt.Fprintf(a.opts.Stdout, "%s.\n", i18n.Get("no_featured_matches"))
+		fmt.Fprintf(a.opts.Stdout, "%s.\n", tr.Get("no_featured_matches"))
 		return nil
 	}
 
@@ -527,7 +551,7 @@ func (a *App) RunFeatured(ctx context.Context, period string) error {
 		if i > 0 {
 			fmt.Fprintln(a.opts.Stdout)
 		}
-		fmt.Fprint(a.opts.Stdout, FormatMatch(m))
+		fmt.Fprint(a.opts.Stdout, FormatMatchWithBundle(m, tr))
 	}
 
 	return nil
@@ -536,17 +560,18 @@ func (a *App) RunFeatured(ctx context.Context, period string) error {
 // RunFeaturedForTeam fetches scheduled events for the given period and
 // shows matches filtered by team query.
 func (a *App) RunFeaturedForTeam(ctx context.Context, period, teamQuery string) error {
+	tr := a.opts.Translator
 	sp, ok := a.provider.(ScheduledEventsProvider)
 	if !ok {
 		return fmt.Errorf("provider does not support scheduled events")
 	}
 
-	dates, err := ResolvePeriod(period)
+	dates, err := resolvePeriodWithBundle(period, tr)
 	if err != nil {
 		return err
 	}
 
-	all, err := collectScheduledByDates(ctx, sp, dates)
+	all, err := collectScheduledByDates(ctx, sp, dates, tr)
 	if err != nil {
 		return err
 	}
@@ -561,7 +586,7 @@ func (a *App) RunFeaturedForTeam(ctx context.Context, period, teamQuery string) 
 	filtered := filterMatchesByTeam(featured, teamQuery)
 	filtered = a.applyMatchLimit(filtered)
 	if len(filtered) == 0 {
-		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", i18n.Get("no_match_found"), teamQuery)
+		fmt.Fprintf(a.opts.Stdout, "%s '%s'.\n", tr.Get("no_match_found"), teamQuery)
 		return nil
 	}
 
@@ -574,7 +599,7 @@ func (a *App) RunFeaturedForTeam(ctx context.Context, period, teamQuery string) 
 		if i > 0 {
 			fmt.Fprintln(a.opts.Stdout)
 		}
-		fmt.Fprint(a.opts.Stdout, FormatMatch(m))
+		fmt.Fprint(a.opts.Stdout, FormatMatchWithBundle(m, tr))
 	}
 	return nil
 }
