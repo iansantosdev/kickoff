@@ -47,6 +47,7 @@ var dictPTBR = map[string]string{
 	"no_featured_matches":      "Nenhum jogo em destaque encontrado para este período",
 	"err_invalid_period":       "período inválido, use: hoje, amanhã ou semana",
 	"err_featured_with_limits": "-n/--proximos e -l/--ultimos não podem ser usados com -f/--destaques",
+	"error_prefix":             "Erro",
 	"usage":                    "Uso",
 	"options":                  "Opções",
 	"default":                  "padrão",

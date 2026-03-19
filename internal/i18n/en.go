@@ -47,6 +47,7 @@ var dictEN = map[string]string{
 	"no_featured_matches":      "No featured matches found for this period",
 	"err_invalid_period":       "invalid period, use: today, tomorrow, or week",
 	"err_featured_with_limits": "-n/--next and -l/--last cannot be used with -f/--featured",
+	"error_prefix":             "Error",
 	"usage":                    "Usage",
 	"options":                  "Options",
 	"default":                  "default",

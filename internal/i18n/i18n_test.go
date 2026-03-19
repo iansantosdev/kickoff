@@ -4,6 +4,24 @@ import (
 	"testing"
 )
 
+func TestBundleZeroAndLanguage(t *testing.T) {
+	var zero Bundle
+	if !zero.IsZero() {
+		t.Fatal("zero bundle should report IsZero")
+	}
+	if got := zero.Language(); got != "en" {
+		t.Fatalf("zero bundle language = %q, want %q", got, "en")
+	}
+
+	pt := New("pt_br")
+	if pt.IsZero() {
+		t.Fatal("initialized bundle should not be zero")
+	}
+	if got := pt.Language(); got != "pt-BR" {
+		t.Fatalf("Language() = %q, want %q", got, "pt-BR")
+	}
+}
+
 func TestSetLanguage(t *testing.T) {
 	tests := []struct {
 		input string

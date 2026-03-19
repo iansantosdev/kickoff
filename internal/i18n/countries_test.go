@@ -119,7 +119,9 @@ func TestCountryFromLang(t *testing.T) {
 		want  string
 	}{
 		{"pt-BR", "BR"},
+		{"pt_br", "BR"},
 		{"en-US", "US"},
+		{"en_US", "US"},
 		{"pt", "BR"},
 		{"en", ""},
 		{"fr", ""},

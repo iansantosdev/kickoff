@@ -325,11 +325,12 @@ var countryAliases = map[string]string{
 // CountryFromLang extracts a country code from a language tag.
 // e.g. "pt-BR" → "BR", "pt" → "BR", "en" → ""
 func CountryFromLang(lang string) string {
-	if parts := strings.SplitN(lang, "-", 2); len(parts) == 2 {
+	normalized := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(lang, "_", "-")))
+	if parts := strings.SplitN(normalized, "-", 2); len(parts) == 2 {
 		return strings.ToUpper(parts[1])
 	}
 	// Map short language codes to default countries
-	switch strings.ToLower(lang) {
+	switch normalized {
 	case "pt":
 		return "BR"
 	default:
