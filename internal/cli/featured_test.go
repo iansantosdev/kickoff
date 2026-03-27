@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -164,23 +166,42 @@ func TestLeagueCandidateDisplayName(t *testing.T) {
 	}
 }
 
-func TestPromptLeagueChoice_InvalidOption(t *testing.T) {
+func TestPromptLeagueChoice_InvalidOptionRetries(t *testing.T) {
 	var out bytes.Buffer
-	_, ok, err := promptLeagueChoice(
-		bufio.NewReader(strings.NewReader("99\n")),
+	got, ok, err := promptLeagueChoice(
+		context.Background(),
+		bufio.NewReader(strings.NewReader("99\n98\n1\n")),
 		&out,
 		i18n.New("en"),
-		[]leagueCandidate{{Name: "A"}},
+		[]leagueCandidate{{Name: "A"}, {Name: "B"}},
 		"A",
 	)
-	if err == nil || ok {
-		t.Fatalf("expected invalid option error, got ok=%v err=%v", ok, err)
+	if err != nil || !ok {
+		t.Fatalf("expected retry after invalid option, got ok=%v err=%v", ok, err)
+	}
+	if got.Name != "A" {
+		t.Fatalf("expected first candidate after retry, got %+v", got)
+	}
+	output := out.String()
+	wantRetry := "Invalid option, try again.\nEnter the number of the desired league (or press Enter for the first option, q to quit): "
+	if !strings.Contains(output, wantRetry) {
+		t.Fatalf("expected retry prompt %q in output, got %q", wantRetry, output)
+	}
+	if got := strings.Count(output, "Invalid option, try again."); got != 1 {
+		t.Fatalf("expected invalid option message once, got %d in %q", got, output)
+	}
+	if got := strings.Count(output, ansiCursorUpLine+ansiClearLine); got != 8 {
+		t.Fatalf("expected localized prompt cleanup plus redraws, got %d in %q", got, output)
+	}
+	if strings.Contains(output, "\033[H\033[2J") {
+		t.Fatalf("did not expect full-screen clear sequence, got %q", output)
 	}
 }
 
 func TestPromptLeagueChoice_EmptySelectsFirst(t *testing.T) {
 	var out bytes.Buffer
 	got, ok, err := promptLeagueChoice(
+		context.Background(),
 		bufio.NewReader(strings.NewReader("\n")),
 		&out,
 		i18n.New("en"),
@@ -192,6 +213,89 @@ func TestPromptLeagueChoice_EmptySelectsFirst(t *testing.T) {
 	}
 	if got.Name != "A" {
 		t.Fatalf("expected first candidate selected, got %+v", got)
+	}
+}
+
+func TestPromptLeagueChoice_Cancel(t *testing.T) {
+	_, ok, err := promptLeagueChoice(
+		context.Background(),
+		bufio.NewReader(strings.NewReader("sair\n")),
+		io.Discard,
+		i18n.New("pt-BR"),
+		[]leagueCandidate{{Name: "A"}},
+		"A",
+	)
+	if ok || !errors.Is(err, ErrPromptCanceled) {
+		t.Fatalf("expected prompt cancel error, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPromptLeagueChoice_ContextCanceled(t *testing.T) {
+	stdinReader, stdinWriter := io.Pipe()
+	defer stdinWriter.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct {
+		ok  bool
+		err error
+	}, 1)
+	go func() {
+		_, ok, err := promptLeagueChoice(
+			ctx,
+			bufio.NewReader(stdinReader),
+			io.Discard,
+			i18n.New("en"),
+			[]leagueCandidate{{Name: "A"}},
+			"A",
+		)
+		done <- struct {
+			ok  bool
+			err error
+		}{ok: ok, err: err}
+	}()
+
+	cancel()
+	_ = stdinWriter.Close()
+
+	select {
+	case result := <-done:
+		if result.ok || !errors.Is(result.err, ErrPromptCanceled) {
+			t.Fatalf("expected prompt cancel error, got ok=%v err=%v", result.ok, result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for prompt cancellation")
+	}
+}
+
+func TestPromptLeagueChoice_InterruptedRead(t *testing.T) {
+	_, ok, err := promptLeagueChoice(
+		context.Background(),
+		bufio.NewReader(interruptReader{err: syscall.EINTR}),
+		io.Discard,
+		i18n.New("en"),
+		[]leagueCandidate{{Name: "A"}},
+		"A",
+	)
+	if ok || !errors.Is(err, ErrPromptCanceled) {
+		t.Fatalf("expected prompt cancel error, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPromptLeagueChoice_EOFReturnsCleanError(t *testing.T) {
+	var out bytes.Buffer
+	_, ok, err := promptLeagueChoice(
+		context.Background(),
+		bufio.NewReader(strings.NewReader("")),
+		&out,
+		i18n.New("en"),
+		[]leagueCandidate{{Name: "A"}},
+		"A",
+	)
+	if ok || err == nil || err.Error() != "input closed" {
+		t.Fatalf("expected clean EOF error, got ok=%v err=%v", ok, err)
+	}
+	if !strings.HasSuffix(out.String(), "\n") {
+		t.Fatalf("expected prompt output to end with newline, got %q", out.String())
 	}
 }
 
@@ -1303,6 +1407,45 @@ func TestRunFeaturedForTeam_InvalidAndNoMatches(t *testing.T) {
 }
 
 func TestRunLeagueForPeriod_ErrorBranches(t *testing.T) {
+	t.Run("selector cancel", func(t *testing.T) {
+		app := NewApp(&mockScheduledProvider{
+			getScheduledEventsFunc: func(ctx context.Context, date string) (iter.Seq[domain.Match], error) {
+				day := mustParseDateLocal(t, date)
+				return func(yield func(domain.Match) bool) {
+					if !yield(domain.Match{
+						EventID:       1,
+						League:        "Premier League",
+						LeagueID:      100,
+						LeagueCountry: "England",
+						StatusDesc:    domain.StatusScheduled,
+						HomeTeam:      domain.Team{Name: "A"},
+						AwayTeam:      domain.Team{Name: "B"},
+						Date:          day.Add(20 * time.Hour),
+					}) {
+						return
+					}
+					yield(domain.Match{
+						EventID:       2,
+						League:        "Premier League",
+						LeagueID:      200,
+						LeagueCountry: "Kazakhstan",
+						StatusDesc:    domain.StatusScheduled,
+						HomeTeam:      domain.Team{Name: "C"},
+						AwayTeam:      domain.Team{Name: "D"},
+						Date:          day.Add(21 * time.Hour),
+					})
+				}, nil
+			},
+		}, AppOptions{
+			Stdin:  strings.NewReader("q\n"),
+			Stdout: io.Discard,
+		})
+		err := app.RunLeagueForPeriod(context.Background(), "Premier League", "today")
+		if !errors.Is(err, ErrPromptCanceled) {
+			t.Fatalf("expected selector cancel, got %v", err)
+		}
+	})
+
 	t.Run("selector read error", func(t *testing.T) {
 		app := NewApp(&mockScheduledProvider{
 			getScheduledEventsFunc: func(ctx context.Context, date string) (iter.Seq[domain.Match], error) {
@@ -1441,6 +1584,45 @@ func TestRunLeagueForPeriodForTeam_ErrorBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("selector cancel", func(t *testing.T) {
+		app := NewApp(&mockScheduledProvider{
+			getScheduledEventsFunc: func(ctx context.Context, date string) (iter.Seq[domain.Match], error) {
+				day := mustParseDateLocal(t, date)
+				return func(yield func(domain.Match) bool) {
+					if !yield(domain.Match{
+						EventID:       1,
+						League:        "Premier League",
+						LeagueID:      100,
+						LeagueCountry: "England",
+						StatusDesc:    domain.StatusScheduled,
+						HomeTeam:      domain.Team{Name: "A"},
+						AwayTeam:      domain.Team{Name: "B"},
+						Date:          day.Add(20 * time.Hour),
+					}) {
+						return
+					}
+					yield(domain.Match{
+						EventID:       2,
+						League:        "Premier League",
+						LeagueID:      200,
+						LeagueCountry: "Kazakhstan",
+						StatusDesc:    domain.StatusScheduled,
+						HomeTeam:      domain.Team{Name: "C"},
+						AwayTeam:      domain.Team{Name: "D"},
+						Date:          day.Add(21 * time.Hour),
+					})
+				}, nil
+			},
+		}, AppOptions{
+			Stdin:  strings.NewReader("sair\n"),
+			Stdout: io.Discard,
+		})
+		err := app.RunLeagueForPeriodForTeam(context.Background(), "Premier League", "today", "Flu")
+		if !errors.Is(err, ErrPromptCanceled) {
+			t.Fatalf("expected selector cancel, got %v", err)
+		}
+	})
+
 	t.Run("league not found", func(t *testing.T) {
 		var stdout bytes.Buffer
 		app := NewApp(&mockScheduledProvider{
@@ -1560,7 +1742,7 @@ func TestRunFeaturedForTeam_ProviderAndFetchAndMultiOutput(t *testing.T) {
 }
 
 func TestPromptLeagueChoice_ReadError(t *testing.T) {
-	_, ok, err := promptLeagueChoice(bufio.NewReader(errReader{}), io.Discard, i18n.New("en"), []leagueCandidate{{Name: "A"}}, "A")
+	_, ok, err := promptLeagueChoice(context.Background(), bufio.NewReader(errReader{}), io.Discard, i18n.New("en"), []leagueCandidate{{Name: "A"}}, "A")
 	if err == nil || ok {
 		t.Fatalf("expected read error, got ok=%v err=%v", ok, err)
 	}

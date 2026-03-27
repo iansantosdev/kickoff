@@ -123,31 +123,43 @@ func (a *App) enrichVenues(ctx context.Context, matches []domain.Match) {
 	a.venueSource.PopulateVenues(ctx, matches)
 }
 
-func promptTeamChoice(stdin io.Reader, stdout io.Writer, tr i18n.Bundle, query string, teams []domain.Team) (domain.Team, error) {
+func promptTeamChoice(ctx context.Context, stdin io.Reader, stdout io.Writer, tr i18n.Bundle, query string, teams []domain.Team) (domain.Team, error) {
 	fmt.Fprintf(stdout, "%s '%s'. %s:\n", tr.Get("multiple_teams_found"), query, tr.Get("choose_correct_option"))
 	for i, team := range teams {
 		fmt.Fprintf(stdout, "%d - %s (%s)\n", i+1, team.Name, team.Subtitle)
 	}
 
-	fmt.Fprintf(stdout, "\n%s: ", tr.Get("prompt_team_choice"))
-
 	reader := bufio.NewReader(stdin)
-	input, err := reader.ReadString('\n')
-	if err != nil {
-		return domain.Team{}, fmt.Errorf("error reading input: %w", err)
-	}
-	input = strings.TrimSpace(input)
+	prompt := tr.Get("prompt_team_choice")
+	invalid := tr.Get("invalid_option")
+	invalidShown := false
+	writeChoicePrompt(stdout, prompt, true)
+	for {
+		input, err := readPromptInput(ctx, reader)
+		if err != nil {
+			fmt.Fprintln(stdout)
+			if errors.Is(err, ErrPromptClosed) {
+				return domain.Team{}, errors.New(tr.Get("prompt_input_closed"))
+			}
+			return domain.Team{}, err
+		}
+		if isPromptCancel(input) {
+			return domain.Team{}, ErrPromptCanceled
+		}
+		if input == "" {
+			clearChoiceBlock(stdout, len(teams), invalidShown)
+			return teams[0], nil
+		}
 
-	if input == "" {
-		return teams[0], nil
-	}
+		choice, err := strconv.Atoi(input)
+		if err == nil && choice >= 1 && choice <= len(teams) {
+			clearChoiceBlock(stdout, len(teams), invalidShown)
+			return teams[choice-1], nil
+		}
 
-	choice, err := strconv.Atoi(input)
-	if err != nil || choice < 1 || choice > len(teams) {
-		return domain.Team{}, errors.New(tr.Get("invalid_option"))
+		rewriteChoicePrompt(stdout, prompt, invalid, invalidShown)
+		invalidShown = true
 	}
-
-	return teams[choice-1], nil
 }
 
 // Run searches for the team, resolves ambiguities interactively,
@@ -179,8 +191,11 @@ func (a *App) Run(ctx context.Context, teamQuery string) error {
 	case len(exactMatches) == 1:
 		selectedTeam = exactMatches[0]
 	case len(exactMatches) > 1:
-		selectedTeam, err = promptTeamChoice(a.opts.Stdin, a.opts.Stdout, tr, teamQuery, exactMatches)
+		selectedTeam, err = promptTeamChoice(ctx, a.opts.Stdin, a.opts.Stdout, tr, teamQuery, exactMatches)
 		if err != nil {
+			if errors.Is(err, ErrPromptCanceled) {
+				return ErrPromptCanceled
+			}
 			return err
 		}
 	case len(candidates) == 0:
@@ -189,8 +204,11 @@ func (a *App) Run(ctx context.Context, teamQuery string) error {
 	case len(candidates) == 1:
 		selectedTeam = candidates[0]
 	default:
-		selectedTeam, err = promptTeamChoice(a.opts.Stdin, a.opts.Stdout, tr, teamQuery, candidates)
+		selectedTeam, err = promptTeamChoice(ctx, a.opts.Stdin, a.opts.Stdout, tr, teamQuery, candidates)
 		if err != nil {
+			if errors.Is(err, ErrPromptCanceled) {
+				return ErrPromptCanceled
+			}
 			return err
 		}
 	}
@@ -252,6 +270,9 @@ func (a *App) RunMultiple(ctx context.Context, teamQueries []string) error {
 		}
 
 		if err := a.Run(ctx, query); err != nil {
+			if errors.Is(err, ErrPromptCanceled) {
+				return ErrPromptCanceled
+			}
 			fmt.Fprintf(a.opts.Stdout, "⚠️  %s: %v\n", query, err)
 			errs = append(errs, fmt.Errorf("%s: %w", query, err))
 		}

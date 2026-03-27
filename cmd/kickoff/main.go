@@ -227,6 +227,10 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	}
 
 	if err != nil {
+		if errors.Is(err, cli.ErrPromptCanceled) {
+			cancel()
+			return 0
+		}
 		cancel()
 		fmt.Fprintf(stderr, "%s: %v\n", tr.Get("error_prefix"), err)
 		return 1

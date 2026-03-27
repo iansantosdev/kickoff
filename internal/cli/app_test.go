@@ -7,10 +7,12 @@ import (
 	"io"
 	"iter"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/iansantosdev/kickoff/internal/domain"
+	"github.com/iansantosdev/kickoff/internal/i18n"
 )
 
 // mockMatchProvider is a simple mock for MatchProvider
@@ -22,6 +24,12 @@ type mockMatchProvider struct {
 type errReader struct{}
 
 func (errReader) Read(p []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+type interruptReader struct {
+	err error
+}
+
+func (r interruptReader) Read(p []byte) (int, error) { return 0, r.err }
 
 type mockAppDataProvider struct {
 	mockMatchProvider
@@ -158,7 +166,7 @@ func TestApp_Run(t *testing.T) {
 }
 
 func TestApp_Run_InvalidChoiceAndReadError(t *testing.T) {
-	t.Run("invalid interactive option", func(t *testing.T) {
+	t.Run("invalid interactive option retries", func(t *testing.T) {
 		var stdout bytes.Buffer
 		provider := &mockMatchProvider{
 			SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
@@ -169,14 +177,41 @@ func TestApp_Run_InvalidChoiceAndReadError(t *testing.T) {
 					yield(domain.Team{ID: "2", Name: "Alfa 2"})
 				}, nil
 			},
+			getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+				if teamID != "2" {
+					t.Fatalf("expected second team after retry, got %s", teamID)
+				}
+				return func(yield func(domain.Match) bool) {
+					yield(domain.Match{
+						League:     "League Retry",
+						StatusDesc: domain.StatusScheduled,
+						HomeTeam:   domain.Team{ID: "1", Name: "A"},
+						AwayTeam:   domain.Team{ID: "2", Name: "B"},
+					})
+				}, nil
+			},
 		}
 		app := NewApp(provider, AppOptions{
-			Stdin:  strings.NewReader("99\n"),
+			Stdin:  strings.NewReader("99\n98\n2\n"),
 			Stdout: &stdout,
 		})
 		err := app.Run(context.Background(), "Al")
-		if err == nil {
-			t.Fatal("expected invalid option error")
+		if err != nil {
+			t.Fatalf("expected retry to recover, got %v", err)
+		}
+		out := stdout.String()
+		wantRetry := "Invalid option, try again.\nEnter the number of the desired team (or press Enter for the first option, q to quit): "
+		if !strings.Contains(out, wantRetry) {
+			t.Fatalf("expected retry prompt %q in output, got %q", wantRetry, out)
+		}
+		if got := strings.Count(out, "Invalid option, try again."); got != 1 {
+			t.Fatalf("expected invalid option message once, got %d in %q", got, out)
+		}
+		if got := strings.Count(out, ansiCursorUpLine+ansiClearLine); got != 8 {
+			t.Fatalf("expected localized prompt cleanup plus redraws, got %d in %q", got, out)
+		}
+		if strings.Contains(out, "\033[H\033[2J") {
+			t.Fatalf("did not expect full-screen clear sequence, got %q", out)
 		}
 	})
 
@@ -199,6 +234,99 @@ func TestApp_Run_InvalidChoiceAndReadError(t *testing.T) {
 		err := app.Run(context.Background(), "Al")
 		if err == nil || !strings.Contains(err.Error(), "error reading input") {
 			t.Fatalf("expected read input error, got %v", err)
+		}
+	})
+}
+
+func TestPromptTeamChoice_Cancel(t *testing.T) {
+	t.Run("q", func(t *testing.T) {
+		_, err := promptTeamChoice(
+			context.Background(),
+			strings.NewReader("q\n"),
+			io.Discard,
+			i18n.New("en"),
+			"Alpha",
+			[]domain.Team{{Name: "Alpha FC"}},
+		)
+		if !errors.Is(err, ErrPromptCanceled) {
+			t.Fatalf("expected prompt cancel error, got %v", err)
+		}
+	})
+
+	t.Run("sair", func(t *testing.T) {
+		_, err := promptTeamChoice(
+			context.Background(),
+			strings.NewReader("sair\n"),
+			io.Discard,
+			i18n.New("pt-BR"),
+			"Alpha",
+			[]domain.Team{{Name: "Alpha FC"}},
+		)
+		if !errors.Is(err, ErrPromptCanceled) {
+			t.Fatalf("expected prompt cancel error, got %v", err)
+		}
+	})
+
+	t.Run("context canceled", func(t *testing.T) {
+		stdinReader, stdinWriter := io.Pipe()
+		defer stdinWriter.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := promptTeamChoice(
+				ctx,
+				stdinReader,
+				io.Discard,
+				i18n.New("en"),
+				"Alpha",
+				[]domain.Team{{Name: "Alpha FC"}},
+			)
+			done <- err
+		}()
+
+		cancel()
+		_ = stdinWriter.Close()
+
+		select {
+		case err := <-done:
+			if !errors.Is(err, ErrPromptCanceled) {
+				t.Fatalf("expected prompt cancel error, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for prompt cancellation")
+		}
+	})
+
+	t.Run("interrupted read", func(t *testing.T) {
+		_, err := promptTeamChoice(
+			context.Background(),
+			interruptReader{err: syscall.EINTR},
+			io.Discard,
+			i18n.New("en"),
+			"Alpha",
+			[]domain.Team{{Name: "Alpha FC"}},
+		)
+		if !errors.Is(err, ErrPromptCanceled) {
+			t.Fatalf("expected prompt cancel error, got %v", err)
+		}
+	})
+
+	t.Run("eof returns clean error", func(t *testing.T) {
+		var stdout bytes.Buffer
+		_, err := promptTeamChoice(
+			context.Background(),
+			strings.NewReader(""),
+			&stdout,
+			i18n.New("en"),
+			"Alpha",
+			[]domain.Team{{Name: "Alpha FC"}},
+		)
+		if err == nil || err.Error() != "input closed" {
+			t.Fatalf("expected clean EOF error, got %v", err)
+		}
+		if !strings.HasSuffix(stdout.String(), "\n") {
+			t.Fatalf("expected prompt output to end with newline, got %q", stdout.String())
 		}
 	})
 }
@@ -432,6 +560,64 @@ func TestApp_Run_SelectionBranchesAndCards(t *testing.T) {
 	})
 }
 
+func TestApp_Run_PromptCancel(t *testing.T) {
+	var stdout bytes.Buffer
+	provider := &mockMatchProvider{
+		SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+			return func(yield func(domain.Team) bool) {
+				if !yield(domain.Team{ID: "1", Name: "Alpha FC"}) {
+					return
+				}
+				yield(domain.Team{ID: "2", Name: "Alpha United"})
+			}, nil
+		},
+		getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+			t.Fatal("GetMatches should not be called after prompt cancellation")
+			return nil, nil
+		},
+	}
+
+	app := NewApp(provider, AppOptions{
+		Stdin:  strings.NewReader("sair\n"),
+		Stdout: &stdout,
+	})
+
+	err := app.Run(context.Background(), "Alpha")
+	if !errors.Is(err, ErrPromptCanceled) {
+		t.Fatalf("expected prompt cancel error, got %v", err)
+	}
+}
+
+func TestApp_RunMultiple_PromptCancelStops(t *testing.T) {
+	var stdout bytes.Buffer
+	provider := &mockMatchProvider{
+		SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
+			if query == "Beta" {
+				t.Fatal("RunMultiple should stop after prompt cancellation")
+			}
+			return func(yield func(domain.Team) bool) {
+				if !yield(domain.Team{ID: "1", Name: "Alpha FC"}) {
+					return
+				}
+				yield(domain.Team{ID: "2", Name: "Alpha United"})
+			}, nil
+		},
+	}
+
+	app := NewApp(provider, AppOptions{
+		Stdin:  strings.NewReader("q\n"),
+		Stdout: &stdout,
+	})
+
+	err := app.RunMultiple(context.Background(), []string{"Alpha", "Beta"})
+	if !errors.Is(err, ErrPromptCanceled) {
+		t.Fatalf("expected prompt cancel error, got %v", err)
+	}
+	if strings.Contains(stdout.String(), "⚠️") {
+		t.Fatalf("did not expect warning output on prompt cancel, got %q", stdout.String())
+	}
+}
+
 func TestApp_Run_GetMatchesError(t *testing.T) {
 	provider := &mockMatchProvider{
 		SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
@@ -538,7 +724,7 @@ func TestApp_enrichVenues_PopulatesMatches(t *testing.T) {
 	}
 }
 
-func TestApp_Run_ExactMatchPromptError(t *testing.T) {
+func TestApp_Run_ExactMatchPromptRetry(t *testing.T) {
 	var stdout bytes.Buffer
 	provider := &mockMatchProvider{
 		SearchTeamFunc: func(ctx context.Context, query string) (iter.Seq[domain.Team], error) {
@@ -549,15 +735,34 @@ func TestApp_Run_ExactMatchPromptError(t *testing.T) {
 				yield(domain.Team{ID: "2", Name: "Alpha", Subtitle: "Argentina"})
 			}, nil
 		},
+		getMatchesFunc: func(ctx context.Context, teamID string, nextLimit, lastLimit int) (iter.Seq[domain.Match], error) {
+			if teamID != "2" {
+				t.Fatalf("expected second exact team after retry, got %s", teamID)
+			}
+			return func(yield func(domain.Match) bool) {
+				yield(domain.Match{
+					League:     "League Exact",
+					StatusDesc: domain.StatusScheduled,
+					HomeTeam:   domain.Team{ID: "1", Name: "A"},
+					AwayTeam:   domain.Team{ID: "2", Name: "B"},
+				})
+			}, nil
+		},
 	}
 
 	app := NewApp(provider, AppOptions{
-		Stdin:  strings.NewReader("99\n"),
+		Stdin:  strings.NewReader("99\n2\n"),
 		Stdout: &stdout,
 	})
 
 	err := app.Run(context.Background(), "Alpha")
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "invalid option") {
-		t.Fatalf("expected invalid option error for exact-match prompt, got %v", err)
+	if err != nil {
+		t.Fatalf("expected retry to recover, got %v", err)
+	}
+	if !strings.Contains(strings.ToLower(stdout.String()), "invalid option") {
+		t.Fatalf("expected invalid option warning for exact-match prompt, got %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "League Exact") {
+		t.Fatalf("expected selected exact-match output, got %q", stdout.String())
 	}
 }

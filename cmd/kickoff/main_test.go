@@ -287,6 +287,22 @@ func TestRun_Errors(t *testing.T) {
 		}
 	})
 
+	t.Run("prompt cancel exits zero", func(t *testing.T) {
+		stub := &runnerStub{err: cli.ErrPromptCanceled}
+		origFactory := newAppRunner
+		newAppRunner = func(opts cli.AppOptions) appRunner { return stub }
+		defer func() { newAppRunner = origFactory }()
+
+		var stderr bytes.Buffer
+		got := run([]string{"-f", "today"}, func(string) string { return "" }, &stderr)
+		if got != 0 {
+			t.Fatalf("exit = %d, want 0", got)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("did not expect stderr output, got %q", stderr.String())
+		}
+	})
+
 	t.Run("featured does not accept next/last flags", func(t *testing.T) {
 		var stderr bytes.Buffer
 		got := run([]string{"-g", "en", "-f", "today", "-n", "2"}, func(string) string { return "" }, &stderr)

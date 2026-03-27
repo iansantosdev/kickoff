@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -320,7 +321,7 @@ func candidatesFromMatches(matches []domain.Match) []leagueCandidate {
 	return out
 }
 
-func selectLeagueFromMatches(stdin *bufio.Reader, stdout io.Writer, tr i18n.Bundle, matches []domain.Match, query string) (leagueCandidate, bool, error) {
+func selectLeagueFromMatches(ctx context.Context, stdin *bufio.Reader, stdout io.Writer, tr i18n.Bundle, matches []domain.Match, query string) (leagueCandidate, bool, error) {
 	allCandidates := candidatesFromMatches(matches)
 	nq := normalizeLeagueName(query)
 
@@ -336,7 +337,7 @@ func selectLeagueFromMatches(stdin *bufio.Reader, stdout io.Writer, tr i18n.Bund
 		return exact[0], true, nil
 	}
 	if len(exact) > 1 {
-		return promptLeagueChoice(stdin, stdout, tr, exact, query)
+		return promptLeagueChoice(ctx, stdin, stdout, tr, exact, query)
 	}
 
 	// 2) Fallback: substring match.
@@ -353,7 +354,7 @@ func selectLeagueFromMatches(stdin *bufio.Reader, stdout io.Writer, tr i18n.Bund
 	if len(candidates) == 1 {
 		return candidates[0], true, nil
 	}
-	return promptLeagueChoice(stdin, stdout, tr, candidates, query)
+	return promptLeagueChoice(ctx, stdin, stdout, tr, candidates, query)
 }
 
 func filterBySelectedLeague(matches []domain.Match, selectedLeague leagueCandidate) []domain.Match {
@@ -373,7 +374,7 @@ func filterBySelectedLeague(matches []domain.Match, selectedLeague leagueCandida
 	return filtered
 }
 
-func promptLeagueChoice(stdin *bufio.Reader, stdout io.Writer, tr i18n.Bundle, candidates []leagueCandidate, query string) (leagueCandidate, bool, error) {
+func promptLeagueChoice(ctx context.Context, stdin *bufio.Reader, stdout io.Writer, tr i18n.Bundle, candidates []leagueCandidate, query string) (leagueCandidate, bool, error) {
 	// If there are duplicate names, disambiguate labels.
 	nameCount := make(map[string]int, len(candidates))
 	for _, c := range candidates {
@@ -391,21 +392,36 @@ func promptLeagueChoice(stdin *bufio.Reader, stdout io.Writer, tr i18n.Bundle, c
 	for i, c := range candidates {
 		fmt.Fprintf(stdout, "%d - %s\n", i+1, c.displayName(disambiguate))
 	}
-	fmt.Fprintf(stdout, "\n%s: ", tr.Get("prompt_league_choice"))
 
-	input, err := stdin.ReadString('\n')
-	if err != nil {
-		return leagueCandidate{}, false, fmt.Errorf("error reading input: %w", err)
+	prompt := tr.Get("prompt_league_choice")
+	invalid := tr.Get("invalid_option")
+	invalidShown := false
+	writeChoicePrompt(stdout, prompt, true)
+	for {
+		input, err := readPromptInput(ctx, stdin)
+		if err != nil {
+			fmt.Fprintln(stdout)
+			if errors.Is(err, ErrPromptClosed) {
+				return leagueCandidate{}, false, errors.New(tr.Get("prompt_input_closed"))
+			}
+			return leagueCandidate{}, false, err
+		}
+		if isPromptCancel(input) {
+			return leagueCandidate{}, false, ErrPromptCanceled
+		}
+		if input == "" {
+			clearChoiceBlock(stdout, len(candidates), invalidShown)
+			return candidates[0], true, nil
+		}
+		choice, err := strconv.Atoi(input)
+		if err == nil && choice >= 1 && choice <= len(candidates) {
+			clearChoiceBlock(stdout, len(candidates), invalidShown)
+			return candidates[choice-1], true, nil
+		}
+
+		rewriteChoicePrompt(stdout, prompt, invalid, invalidShown)
+		invalidShown = true
 	}
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return candidates[0], true, nil
-	}
-	choice, err := strconv.Atoi(input)
-	if err != nil || choice < 1 || choice > len(candidates) {
-		return leagueCandidate{}, false, fmt.Errorf("%s", tr.Get("invalid_option"))
-	}
-	return candidates[choice-1], true, nil
 }
 
 // RunLeague fetches scheduled events for the next days (default: week)
@@ -434,8 +450,11 @@ func (a *App) RunLeagueForPeriod(ctx context.Context, leagueName, period string)
 	}
 
 	stdin := bufio.NewReader(a.opts.Stdin)
-	selectedLeague, ok, err := selectLeagueFromMatches(stdin, a.opts.Stdout, tr, all, leagueName)
+	selectedLeague, ok, err := selectLeagueFromMatches(ctx, stdin, a.opts.Stdout, tr, all, leagueName)
 	if err != nil {
+		if errors.Is(err, ErrPromptCanceled) {
+			return ErrPromptCanceled
+		}
 		return err
 	}
 	if !ok {
@@ -480,8 +499,11 @@ func (a *App) RunLeagueForPeriodForTeam(ctx context.Context, leagueName, period,
 	}
 
 	stdin := bufio.NewReader(a.opts.Stdin)
-	selectedLeague, ok, err := selectLeagueFromMatches(stdin, a.opts.Stdout, tr, all, leagueName)
+	selectedLeague, ok, err := selectLeagueFromMatches(ctx, stdin, a.opts.Stdout, tr, all, leagueName)
 	if err != nil {
+		if errors.Is(err, ErrPromptCanceled) {
+			return ErrPromptCanceled
+		}
 		return err
 	}
 	if !ok {
